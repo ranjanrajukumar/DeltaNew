@@ -1,0 +1,259 @@
+import fs from 'node:fs';
+import { AppMenuItem, Setting, User } from '../../models/index.js';
+import { badRequest, notFound } from '../../utils/httpError.js';
+import { sniff } from '../files/files.service.js';
+
+/**
+ * The mobile app's menu, kept in the database so an admin can rename tiles, change icons, reorder, hide, or limit them to roles
+ * without a new app release. What each page does stays in the app; this table only says how it is presented.
+ * defaults.json is generated from the app's registry (npm run gen:menu in app/) and seeds the table.
+ */
+const readJson = (name) => JSON.parse(fs.readFileSync(new URL(name, import.meta.url), 'utf8'));
+// the mobile app's menu (generated in app/) and the website's menu (generated in client/)
+const DEFAULTS = [...readJson('./defaults.json'), ...readJson('./webDefaults.json')];
+const AUDIENCES = ['staff', 'family', 'web'];
+// the roles a login (identity) can have: taken from the user model, so a menu can never name a role that does not exist
+const ROLES = User.getAttributes().role.values;
+export const MAX_ICON_BYTES = 60 * 1024;
+const ICON_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+const audienceOf = (role) => (['parent', 'student'].includes(role) ? 'family' : 'staff');
+const splitRoles = (text) =>
+  text
+    ? text
+        .split(',')
+        .map((r) => r.trim())
+        .filter(Boolean)
+    : null;
+
+const seedRow = (d) => ({
+  audience: d.audience,
+  key: d.key,
+  parentKey: d.parentKey ?? null,
+  kind: d.kind,
+  label: d.label,
+  icon: d.icon,
+  roles: d.roles?.length ? d.roles.join(',') : null,
+  position: d.position,
+  active: true,
+});
+
+/**
+ * Adds any default item the table does not have yet, and removes rows for pages the app no longer has (a page cannot be invented from the
+ * website, so such a row could only be a dead tile). Existing rows, with whatever an admin changed, are left alone.
+ */
+export async function ensureAppMenu() {
+  const rows = await AppMenuItem.findAll({ attributes: ['id', 'audience', 'key'] });
+  const known = new Set(DEFAULTS.map((d) => `${d.audience}|${d.key}`));
+  const have = new Set(rows.map((r) => `${r.audience}|${r.key}`));
+  const stale = rows.filter((r) => !known.has(`${r.audience}|${r.key}`)).map((r) => r.id);
+  if (stale.length) await AppMenuItem.destroy({ where: { id: stale }, force: true });
+  const missing = DEFAULTS.filter((d) => !have.has(`${d.audience}|${d.key}`)).map(seedRow);
+  if (missing.length) await AppMenuItem.bulkCreate(missing);
+  return missing.length + stale.length;
+}
+
+/**
+ * One-time tightening of who sees which website menu entry (teachers lose transport, library and the staff directory, accountants lose
+ * academics and exams, and so on). ensureAppMenu leaves existing rows alone, so these rows are brought in line with the defaults once,
+ * and a flag records it: an admin who later changes them is not overwritten.
+ */
+const ROLE_FIX_FLAG = 'menu.roleFix.2026-10';
+const ROLE_FIX_KEYS = [
+  'students.alumni',
+  'academics',
+  'academics.online-classes',
+  'timetable',
+  'examinations',
+  'examinations.holistic-progress-card',
+  'examinations.revaluation-requests',
+  'transport.vehicles',
+  'transport.drivers-and-attendants',
+  'transport.routes',
+  'transport.stops',
+  'transport.student-route-assignment',
+  'transport.bus-tracking-live-gps',
+  'transport.vehicle-maintenance',
+  'transport.transport-reports',
+  'library',
+  'staff-and-hr.departments',
+  'staff-and-hr.designations',
+  'staff-and-hr.staff-directory',
+];
+
+export async function applyMenuRoleFix() {
+  if (await Setting.findByPk(ROLE_FIX_FLAG)) return 0;
+  let changed = 0;
+  for (const key of ROLE_FIX_KEYS) {
+    const d = DEFAULTS.find((x) => x.audience === 'web' && x.key === key);
+    if (!d) continue;
+    const [n] = await AppMenuItem.update(
+      { roles: d.roles?.length ? d.roles.join(',') : null },
+      { where: { audience: 'web', key } },
+    );
+    changed += n;
+  }
+  await Setting.create({ key: ROLE_FIX_FLAG, value: JSON.stringify('done'), updatedByName: 'system' });
+  return changed;
+}
+
+/**
+ * One-time fix: the course tiles of the student home used to share the plain list icon. Rows still carrying that default icon get
+ * the specific one; a tile an admin gave another icon (including one who set it back to the plain list icon on purpose) is left alone,
+ * same as applyMenuRoleFix above - a flag records it so this does not run, and cannot undo that choice, on every later boot.
+ */
+const ICON_FIX_FLAG = 'menu.iconFix.2026-11';
+const COURSE_ICONS = {
+  'academic.lms': 'play-circle-outline',
+  'academic.lmsannouncements': 'megaphone-outline',
+  'academic.lmsassignments': 'clipboard-outline',
+  'academic.lmsquizzes': 'help-circle-outline',
+};
+export async function applyMenuIconFix() {
+  if (await Setting.findByPk(ICON_FIX_FLAG)) return 0;
+  let changed = 0;
+  for (const [key, icon] of Object.entries(COURSE_ICONS)) {
+    const [n] = await AppMenuItem.update({ icon }, { where: { audience: 'family', key, icon: 'list-outline' } });
+    changed += n;
+  }
+  await Setting.create({ key: ICON_FIX_FLAG, value: JSON.stringify('done'), updatedByName: 'system' });
+  return changed;
+}
+
+/** The menu one person sees: active items, in order, whose roles (own, else the parent's) include theirs. */
+export async function menuFor(role, audience = audienceOf(role)) {
+  const rows = await AppMenuItem.findAll({
+    where: { audience, active: true },
+    order: [
+      ['position', 'ASC'],
+      ['id', 'ASC'],
+    ],
+  });
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  const allowed = (r) => {
+    const parent = r.parentKey ? byKey.get(r.parentKey) : null;
+    if (r.parentKey && !parent) return false; // its module is hidden
+    if (parent && !allowed(parent)) return false;
+    const roles = splitRoles(r.roles) ?? (parent ? splitRoles(parent.roles) : null);
+    return !roles || roles.includes(role);
+  };
+  return rows.filter(allowed).map((r) => ({
+    key: r.key,
+    parentKey: r.parentKey,
+    kind: r.kind,
+    label: r.label,
+    icon: r.icon,
+    position: r.position,
+    iconData: r.iconImage ? `data:${r.iconMime};base64,${r.iconImage}` : null,
+  }));
+}
+
+const shapeAdmin = (r) => ({
+  id: r.id,
+  audience: r.audience,
+  key: r.key,
+  parentKey: r.parentKey,
+  kind: r.kind,
+  label: r.label,
+  icon: r.icon,
+  roles: splitRoles(r.roles),
+  position: r.position,
+  active: r.active,
+  hasImage: Boolean(r.iconImage),
+  iconData: r.iconImage ? `data:${r.iconMime};base64,${r.iconImage}` : null,
+});
+
+export async function listForAdmin(audience) {
+  if (!AUDIENCES.includes(audience)) throw badRequest('audience must be staff, family or web');
+  const rows = await AppMenuItem.findAll({
+    where: { audience },
+    order: [
+      ['position', 'ASC'],
+      ['id', 'ASC'],
+    ],
+  });
+  return rows.map(shapeAdmin);
+}
+
+export async function updateItem(id, body) {
+  const row = await AppMenuItem.findByPk(id);
+  if (!row) throw notFound('Menu item not found');
+  const changes = {};
+  if (body.label !== undefined) {
+    const label = String(body.label).trim();
+    if (!label || label.length > 80) throw badRequest('The label must be 1 to 80 characters');
+    changes.label = label;
+  }
+  if (body.icon !== undefined) {
+    const icon = String(body.icon).trim();
+    // the website shows a symbol (an emoji) as its icon, the app an Ionicons name
+    if (row.audience === 'web') {
+      if (!icon || [...icon].length > 8) throw badRequest('A website icon is one symbol, such as 💰');
+    } else if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(icon) || icon.length > 60)
+      throw badRequest('An icon name looks like "wallet-outline"');
+    changes.icon = icon;
+  }
+  if (body.position !== undefined) {
+    const position = Number(body.position);
+    if (!Number.isInteger(position) || position < 0 || position > 100000)
+      throw badRequest('Position must be a whole number');
+    changes.position = position;
+  }
+  if (body.active !== undefined) changes.active = Boolean(body.active);
+  if (body.roles !== undefined) {
+    if (body.roles === null || (Array.isArray(body.roles) && !body.roles.length)) changes.roles = null;
+    else {
+      if (!Array.isArray(body.roles) || body.roles.some((r) => !ROLES.includes(r)))
+        throw badRequest(`Roles must come from: ${ROLES.join(', ')}`);
+      const family = row.audience === 'family';
+      if (row.audience !== 'web' && body.roles.some((r) => ['parent', 'student'].includes(r) !== family))
+        throw badRequest(
+          family
+            ? 'The family menu is for parents and students'
+            : 'The staff menu is for admins, teachers and accountants',
+        );
+      changes.roles = [...new Set(body.roles)].join(',');
+    }
+  }
+  if (!Object.keys(changes).length) throw badRequest('Nothing to change');
+  await row.update(changes);
+  return shapeAdmin(row);
+}
+
+/** An uploaded icon, judged by its bytes: PNG, JPEG or WebP up to 60 KB. */
+export async function setImage(id, buffer) {
+  const row = await AppMenuItem.findByPk(id);
+  if (!row) throw notFound('Menu item not found');
+  if (!Buffer.isBuffer(buffer) || !buffer.length) throw badRequest('No file received');
+  if (buffer.length > MAX_ICON_BYTES) throw badRequest(`An icon can be at most ${MAX_ICON_BYTES / 1024} KB`);
+  const mime = sniff(buffer);
+  if (!ICON_TYPES.includes(mime)) throw badRequest('An icon must be a PNG, JPEG or WebP image');
+  await row.update({ iconImage: buffer.toString('base64'), iconMime: mime });
+  return shapeAdmin(row);
+}
+
+export async function clearImage(id) {
+  const row = await AppMenuItem.findByPk(id);
+  if (!row) throw notFound('Menu item not found');
+  await row.update({ iconImage: null, iconMime: null });
+  return shapeAdmin(row);
+}
+
+/** Puts one audience's menu back to the built-in defaults: labels, icons, order, roles, visibility and uploaded pictures. */
+export async function resetMenu(audience) {
+  if (!AUDIENCES.includes(audience)) throw badRequest('audience must be staff, family or web');
+  const defaults = DEFAULTS.filter((d) => d.audience === audience);
+  let restored = 0;
+  for (const d of defaults) {
+    const row = await AppMenuItem.findOne({ where: { audience, key: d.key } });
+    const seed = { ...seedRow(d), iconImage: null, iconMime: null };
+    if (row) {
+      await row.update(seed);
+      restored += 1;
+    } else {
+      await AppMenuItem.create(seed);
+      restored += 1;
+    }
+  }
+  return { restored };
+}

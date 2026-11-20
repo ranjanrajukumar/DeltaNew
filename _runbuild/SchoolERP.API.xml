@@ -1,0 +1,906 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>SchoolERP.API</name>
+    </assembly>
+    <members>
+        <member name="T:SchoolERP.API.BackgroundJobs.AbsenceAlertTimer">
+            <summary>
+            Checks every five minutes whether today's automatic absence alerts are due (the Node app's startAbsenceAlertTimer).
+            The switch and the cut-off time are settings; nothing is sent while they are off or before the time.
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.BackgroundJobs.AbsenceAlertTimer.#ctor(Microsoft.Extensions.DependencyInjection.IServiceScopeFactory,Microsoft.Extensions.Logging.ILogger{SchoolERP.API.BackgroundJobs.AbsenceAlertTimer})">
+            <summary>
+            Checks every five minutes whether today's automatic absence alerts are due (the Node app's startAbsenceAlertTimer).
+            The switch and the cut-off time are settings; nothing is sent while they are off or before the time.
+            </summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.AcademicYearsController">
+            <summary>/api/academic-years (the Node app's academics/academicYears.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AcademicYearsController.#ctor(SchoolERP.Application.Interfaces.Services.IAcademicYearService)">
+            <summary>/api/academic-years (the Node app's academics/academicYears.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AcademicYearsController.SetCurrent(System.Int32,System.Threading.CancellationToken)">
+            <summary>Exactly one year is current; switching clears the flag on every other year.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.SubjectsController">
+            <summary>/api/subjects (crudRouter over Subject: name, code).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.SubjectsController.#ctor(SchoolERP.Application.Interfaces.Services.ICrudService{SchoolERP.Domain.Entities.Subject})">
+            <summary>/api/subjects (crudRouter over Subject: name, code).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.NoticesController">
+            <summary>/api/notices (crudRouter over Notice: title, body, audience).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.NoticesController.#ctor(SchoolERP.Application.Interfaces.Services.ICrudService{SchoolERP.Domain.Entities.Notice})">
+            <summary>/api/notices (crudRouter over Notice: title, body, audience).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.LmsTagsController">
+            <summary>/api/lms-tags (crudRouter over LmsTag, listed by name).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.LmsTagsController.#ctor(SchoolERP.Application.Interfaces.Services.ICrudService{SchoolERP.Domain.Entities.LmsTag})">
+            <summary>/api/lms-tags (crudRouter over LmsTag, listed by name).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.ClassSubjectsController">
+            <summary>/api/class-subjects: the subject map (the Node app's academics/classSubjects.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.#ctor(SchoolERP.Application.Modules.Academics.ClassSubjectsService,SchoolERP.Application.Interfaces.Services.ISubjectMapService)">
+            <summary>/api/class-subjects: the subject map (the Node app's academics/classSubjects.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.List(System.Threading.CancellationToken)">
+            <summary>Class–subject assignments with readable names and how each subject is taught.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.Map(System.String,System.Threading.CancellationToken)">
+            <summary>One class's subject map.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.Electives(System.String,System.Threading.CancellationToken)">
+            <summary>One class's elective sheet: the groups and what each student chose.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.ApplyTemplate(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ classIds?: [] }: gives each class its board's default subjects and periods per week.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.ClassIdOf(System.String)">
+            <summary>findByPk(undefined or junk) found nothing: "Class not found".</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.CalendarController">
+            <summary>/api/calendar (the Node app's academics/calendar.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.CalendarController.#ctor(SchoolERP.Application.Modules.Academics.CalendarService)">
+            <summary>/api/calendar (the Node app's academics/calendar.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.CalendarController.List(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>Events and activities overlapping from..to (default: the current month).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.HomeworkController">
+            <summary>/api/homework (the Node app's academics/homework.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HomeworkController.#ctor(SchoolERP.Application.Modules.Academics.HomeworkService)">
+            <summary>/api/homework (the Node app's academics/homework.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HomeworkController.SaveSubmissions(System.Int32,System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ records: [{ studentId, status, marks?, remarks? }] }</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.StudyMaterialsController">
+            <summary>/api/study-materials (the Node app's academics/materials.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudyMaterialsController.#ctor(SchoolERP.Application.Modules.Academics.StudyMaterialService)">
+            <summary>/api/study-materials (the Node app's academics/materials.routes.js).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.SyllabusController">
+            <summary>/api/syllabus (the Node app's academics/syllabus.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.SyllabusController.#ctor(SchoolERP.Application.Modules.Academics.SyllabusService)">
+            <summary>/api/syllabus (the Node app's academics/syllabus.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.SyllabusController.Progress(System.Threading.CancellationToken)">
+            <summary>% of topics completed for each class and subject.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.OnlineClassesController">
+            <summary>/api/online-classes (the Node app's academics/onlineClasses.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.OnlineClassesController.#ctor(SchoolERP.Application.Modules.Academics.OnlineClassesService)">
+            <summary>/api/online-classes (the Node app's academics/onlineClasses.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.OnlineClassesController.List(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?classId=&amp;when=upcoming|past</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.MyClassController">
+            <summary>/api/my-class: a class teacher's own classes (the Node app's academics/myClass.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.MyClassController.#ctor(SchoolERP.Application.Modules.Academics.MyClassService,SchoolERP.Application.Interfaces.Services.IClassService,SchoolERP.Application.Common.Interfaces.ICurrentUser)">
+            <summary>/api/my-class: a class teacher's own classes (the Node app's academics/myClass.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.MyClassController.List(System.Threading.CancellationToken)">
+            <summary>The classes the signed-in teacher is class teacher of.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.MyClassController.Get(System.Int32,System.Threading.CancellationToken)">
+            <summary>That class today. A teacher can open only their own classes; an admin can open any.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.AttendanceController">
+            <summary>/api/attendance (the Node app's academics/attendance.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AttendanceController.#ctor(SchoolERP.Application.Modules.Attendance.AttendanceService,SchoolERP.Application.Modules.Attendance.MonthlyRegisterService,SchoolERP.Application.Modules.Attendance.TeacherScope,SchoolERP.Application.Common.Interfaces.ICurrentUser)">
+            <summary>/api/attendance (the Node app's academics/attendance.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AttendanceController.Roster(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?date=YYYY-MM-DD&amp;classId= : active students with their mark for that day.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AttendanceController.Monthly(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?month=2026-10&amp;classId= : each student's mark for every day of the month, with totals.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AttendanceController.SaveMonthly(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ month, changes: [{ id, date, status }], reason? }: saves edits made on the monthly register.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AttendanceController.Corrections(System.String,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?studentId=&amp;from=&amp;to= : marks changed after they were first saved.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AttendanceController.Save(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ date, records: [{ studentId, status, arrivalTime?, note? }], reason? }</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.StudentLeavesController">
+            <summary>/api/student-leaves (the Node app's attendanceExtras leaveRouter).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentLeavesController.#ctor(SchoolERP.Application.Modules.Attendance.StudentLeaveService,SchoolERP.Application.Common.Interfaces.ICurrentUser)">
+            <summary>/api/student-leaves (the Node app's attendanceExtras leaveRouter).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentLeavesController.Apply(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>Staff record a leave received by phone or letter.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.PeriodAttendanceController">
+            <summary>/api/period-attendance (the Node app's attendanceExtras periodRouter).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PeriodAttendanceController.#ctor(SchoolERP.Application.Modules.Attendance.AttendanceExtrasService)">
+            <summary>/api/period-attendance (the Node app's attendanceExtras periodRouter).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PeriodAttendanceController.Roster(System.String,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?classId=&amp;date=&amp;period= : the roster; the subject comes from the timetable when it has one.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PeriodAttendanceController.Save(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ classId, date, period, subjectId?, records: [{ studentId, status }] }</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PeriodAttendanceController.Summary(System.String,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?classId=&amp;from=&amp;to= : periods missed per student, worst first.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.AbsenceAlertsController">
+            <summary>/api/absence-alerts (the Node app's attendanceExtras alertRouter).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AbsenceAlertsController.#ctor(SchoolERP.Application.Modules.Attendance.AttendanceExtrasService,SchoolERP.Application.Modules.Messaging.MessagingService,SchoolERP.Application.Common.Interfaces.ICurrentUser)">
+            <summary>/api/absence-alerts (the Node app's attendanceExtras alertRouter).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AbsenceAlertsController.Auto(System.Threading.CancellationToken)">
+            <summary>Whether automatic alerts are on, from when, and whether they also text the guardian.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AbsenceAlertsController.Run(System.Threading.CancellationToken)">
+            <summary>Send today's alerts now, ignoring the switch and the cut-off time.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AbsenceAlertsController.List(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?date=&amp;classId= : students marked absent, with guardian contact and whether anyone was told.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AbsenceAlertsController.Send(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ studentId, date }: texts the guardian; only a delivered SMS is logged as "informed".</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AbsenceAlertsController.Log(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ studentId, date, method, note? }: logs that the guardian was told.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.LeaveTypesController">
+            <summary>/api/leave-types: every staff login reads them; only an admin changes them (the Node app's leave/leaveTypes.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.LeaveTypesController.#ctor(SchoolERP.Application.Modules.Leave.LeaveTypesService,SchoolERP.Application.Common.Interfaces.ICurrentUser)">
+            <summary>/api/leave-types: every staff login reads them; only an admin changes them (the Node app's leave/leaveTypes.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.LeaveTypesController.List(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?kind=staff|student&amp;all=1 (all includes switched-off types, for admins).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.LeaveTypesController.Balances(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?kind=staff|student&amp;year= : days used per type for everyone.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.PushController">
+            <summary>
+            /api/push: every signed-in user (parents and students too) switches notifications on for their own device; sending is for
+            built-in admins only (the Node app's push/push.routes.js).
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PushController.#ctor(SchoolERP.Application.Common.Interfaces.IPushService,SchoolERP.Application.Common.Interfaces.ICurrentUser)">
+            <summary>
+            /api/push: every signed-in user (parents and students too) switches notifications on for their own device; sending is for
+            built-in admins only (the Node app's push/push.routes.js).
+            </summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.AuthController">
+            <summary>/api/health and /api/auth (the Node app's routes/index.js health check and platform/auth.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AuthController.#ctor(SchoolERP.Application.Modules.Authentication.AuthService,SchoolERP.Application.Modules.Authentication.LoginLimiter)">
+            <summary>/api/health and /api/auth (the Node app's routes/index.js health check and platform/auth.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AuthController.Health">
+            <summary>Is the API up.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AuthController.Login(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>Sign in with an email (or a student's admission number) and password.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AuthController.Me(System.Threading.CancellationToken)">
+            <summary>The signed-in user's own profile and access, so the UI can hide what a custom role does not include.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.AuthController.ChangePassword(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ currentPassword, newPassword }: anyone signed in, and the only thing a temporary password may do.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.ClassesController">
+            <summary>/api/classes: any staff member reads, only an admin changes (the Node app's academics/classes.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ClassesController.#ctor(SchoolERP.Application.Interfaces.Services.IClassService)">
+            <summary>/api/classes: any staff member reads, only an admin changes (the Node app's academics/classes.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ClassesController.Overview(System.Threading.CancellationToken)">
+            <summary>Tiles and one row per class for the Academics overview page.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ClassesController.Map(System.Int32,System.Threading.CancellationToken)">
+            <summary>One class on a page: teacher, subject map, fees, activities, transport, hostel and timetable.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.CrudController`1">
+            <summary>
+            The standard list/create/update/delete endpoints for one table (the Node app's crudRouter). A derived controller sets its
+            route, the writable <see cref="P:SchoolERP.API.Controllers.CrudController`1.Fields"/>, and overrides <see cref="M:SchoolERP.API.Controllers.CrudController`1.ListAsync(System.Threading.CancellationToken)"/> when the list needs joined data.
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.CrudController`1.#ctor(SchoolERP.Application.Interfaces.Services.ICrudService{`0})">
+            <summary>
+            The standard list/create/update/delete endpoints for one table (the Node app's crudRouter). A derived controller sets its
+            route, the writable <see cref="P:SchoolERP.API.Controllers.CrudController`1.Fields"/>, and overrides <see cref="M:SchoolERP.API.Controllers.CrudController`1.ListAsync(System.Threading.CancellationToken)"/> when the list needs joined data.
+            </summary>
+        </member>
+        <member name="P:SchoolERP.API.Controllers.CrudController`1.Fields">
+            <summary>The writable fields, fixed in code.</summary>
+        </member>
+        <member name="P:SchoolERP.API.Controllers.CrudController`1.WriteRoles">
+            <summary>The Node app's writeRoles(...) on the router: who may create, update and delete. Null = whoever reaches the route.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.CrudController`1.ListAsync(System.Threading.CancellationToken)">
+            <summary>What GET / returns; every row newest first unless overridden.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.CrudController`1.DeleteAsync(System.Int32,System.Threading.CancellationToken)">
+            <summary>What DELETE /:id does; a plain delete unless overridden (a missing row is not an error).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.ExamsController">
+            <summary>
+            /api/exams: exams, marks, results and report cards, plus grade setup, the board exam pattern, exam groups, merit lists and
+            revaluation (the Node app's exams/exams.routes.js and examExtras.routes.js). Everyone on the staff reads; admins change.
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.#ctor(SchoolERP.Application.Modules.Exams.ExamsService,SchoolERP.Application.Modules.Exams.ExamExtrasService,SchoolERP.Application.Common.Interfaces.ICurrentUser)">
+            <summary>
+            /api/exams: exams, marks, results and report cards, plus grade setup, the board exam pattern, exam groups, merit lists and
+            revaluation (the Node app's exams/exams.routes.js and examExtras.routes.js). Everyone on the staff reads; admins change.
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.Grading(System.String,System.Threading.CancellationToken)">
+            <summary>?board= : the board's pass mark and grade bands.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.SaveGrading(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ passPercent, bands: [{ grade, min }], board?, sourceRef?, changeNote? }: a new version of the grading rule.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.ApplyPattern(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ classIds?: [] }: gives each class its board's yearly exams and result group.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.GroupResults(System.Int32,System.Threading.CancellationToken)">
+            <summary>Each student's exam percentages combined by the exams' weights.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.Assign(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ examId, groupId|null, weight? }</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.Merit(System.String,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?examId= or ?groupId=, &amp;limit= : passing students ranked.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.RequestRevaluation(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ examId, studentId, subjectId, reason }</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.Accept(System.Int32,System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ newMarks, remarks? }: records the corrected mark on the exam.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.Reject(System.Int32,System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ remarks }</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.Marks(System.Int32,System.Threading.CancellationToken)">
+            <summary>The mark-entry grid; a teacher can edit only the subjects assigned to them.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ExamsController.SaveMarks(System.Int32,System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ records: [{ studentId, subjectId, marks }] } (or theory and practical for split subjects).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.ProgressCardController">
+            <summary>/api/progress-card: co-scholastic grading and the holistic progress card (the Node app's progress/progress.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ProgressCardController.#ctor(SchoolERP.Application.Modules.Exams.ProgressService)">
+            <summary>/api/progress-card: co-scholastic grading and the holistic progress card (the Node app's progress/progress.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ProgressCardController.CreateArea(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ name, category? }</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.ProgressCardController.SaveGrades(System.Int32,System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ records: [{ studentId, areaId, grade, remark? }] }: a blank grade clears the cell.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.PromotionController">
+            <summary>/api/promotion: year-end promotion (admin only; the Node app's academics/promotion.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PromotionController.#ctor(SchoolERP.Application.Modules.Academics.PromotionService)">
+            <summary>/api/promotion: year-end promotion (admin only; the Node app's academics/promotion.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PromotionController.Eligibility(System.String,System.Threading.CancellationToken)">
+            <summary>?classId= : each student's standing against the board's promotion rule.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PromotionController.Promote(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ fromClassId, toClassId?, studentIds?, onlyEligible?, allowCrossBoard? }</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.StaffController">
+            <summary>/api/staff: any staff role reads (what they see depends on their role), only an admin changes (hr/staff.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StaffController.#ctor(SchoolERP.Application.Modules.HR.StaffService,SchoolERP.Application.Common.Interfaces.ICurrentUser)">
+            <summary>/api/staff: any staff role reads (what they see depends on their role), only an admin changes (hr/staff.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StaffController.Delete(System.Int32,System.Threading.CancellationToken)">
+            <summary>Refused while the person has payslips; mark them inactive instead.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.DepartmentsController">
+            <summary>/api/hr/departments (crudRouter: name, headStaffId; every staff role reads, an admin writes).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.DepartmentsController.#ctor(SchoolERP.Application.Interfaces.Services.ICrudService{SchoolERP.Domain.Entities.Department},SchoolERP.Application.Modules.HR.HrService)">
+            <summary>/api/hr/departments (crudRouter: name, headStaffId; every staff role reads, an admin writes).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.DesignationsController">
+            <summary>/api/hr/designations (crudRouter: name; every staff role reads, an admin writes).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.DesignationsController.#ctor(SchoolERP.Application.Interfaces.Services.ICrudService{SchoolERP.Domain.Entities.Designation})">
+            <summary>/api/hr/designations (crudRouter: name; every staff role reads, an admin writes).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.HrController">
+            <summary>/api/hr: staff attendance, staff leave, own records and the HR report (hr/hr.routes.js; roles per endpoint).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HrController.#ctor(SchoolERP.Application.Modules.HR.HrService,SchoolERP.Application.Modules.HR.StaffService,SchoolERP.Application.Common.Interfaces.ICurrentUser)">
+            <summary>/api/hr: staff attendance, staff leave, own records and the HR report (hr/hr.routes.js; roles per endpoint).</summary>
+        </member>
+        <member name="P:SchoolERP.API.Controllers.HrController.OwnStaffId">
+            <summary>A teacher or admin who is also a staff member reaches their own record through the login's staff link.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HrController.MyAttendance(System.String,System.Threading.CancellationToken)">
+            <summary>?month=YYYY-MM : the signed-in staff member's own marks.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HrController.MyProfile(System.Threading.CancellationToken)">
+            <summary>The signed-in staff member's own record, every detail, in sections.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HrController.Roster(System.String,System.Threading.CancellationToken)">
+            <summary>?date= : active staff with their mark for the day.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HrController.Monthly(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?month=&amp;category= : the staff register for a month.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HrController.SaveMonthly(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ month, changes: [{ id, date, status }] }</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HrController.SaveAttendance(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ date, records: [{ staffId, status }] }</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HrController.Leaves(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>Leave requests; a department head sees only those they can decide.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HrController.Apply(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>A teacher can only apply for themselves; the leave type's rules decide approval.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.HrController.Reports(System.String,System.Threading.CancellationToken)">
+            <summary>?month=YYYY-MM (default this month): headcount, attendance and leave per person.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.PayrollController">
+            <summary>/api/payroll: admin and accountant; only an admin marks a payslip paid (hr/payroll.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PayrollController.#ctor(SchoolERP.Application.Modules.HR.PayrollService)">
+            <summary>/api/payroll: admin and accountant; only an admin marks a payslip paid (hr/payroll.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PayrollController.SaveSalary(System.Int32,System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ basic, allowances, deductions }</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PayrollController.Payslips(System.String,System.Threading.CancellationToken)">
+            <summary>?month=YYYY-MM</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PayrollController.Generate(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ month }: a draft payslip for each active staff member with salary terms.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.RecruitmentController">
+            <summary>/api/recruitment: openings and applicants (admin only; hr/recruitment.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.RecruitmentController.#ctor(SchoolERP.Application.Modules.HR.RecruitmentService)">
+            <summary>/api/recruitment: openings and applicants (admin only; hr/recruitment.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.RecruitmentController.Status(System.Int32,System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ status }: applied → shortlisted → interviewed → offered (or rejected).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.RecruitmentController.Hire(System.Int32,System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ staffNo?, joinDate? }: turns an offered applicant into a staff member.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.PerformanceReviewsController">
+            <summary>/api/performance-reviews (admin only; hr/reviews.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.PerformanceReviewsController.#ctor(SchoolERP.Application.Modules.HR.ReviewsService)">
+            <summary>/api/performance-reviews (admin only; hr/reviews.routes.js).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.StaffFilesController">
+            <summary>/api/staff-files: contracts, certificates and ID proofs (admin only; hr/staffFiles.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StaffFilesController.#ctor(SchoolERP.Application.Modules.Files.FilesService)">
+            <summary>/api/staff-files: contracts, certificates and ID proofs (admin only; hr/staffFiles.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StaffFilesController.Upload(System.String,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?staffId=&amp;title=&amp;name= with the file as the raw request body (PDF, JPEG, PNG or WebP, at most 5 MB).</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.StudentFilesController">
+            <summary>/api/student-files: photos and documents (admins and teachers read; admins change; files/files.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentFilesController.#ctor(SchoolERP.Application.Modules.Files.FilesService)">
+            <summary>/api/student-files: photos and documents (admins and teachers read; admins change; files/files.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentFilesController.Upload(System.String,System.String,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?studentId=&amp;kind=photo|document&amp;title=&amp;name= with the file as the raw request body.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.StudentsController">
+            <summary>/api/students: any staff member reads, only an admin changes (the Node app's academics/students.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentsController.#ctor(SchoolERP.Application.Modules.Students.StudentsService,SchoolERP.Application.Interfaces.Services.ISubjectMapService)">
+            <summary>/api/students: any staff member reads, only an admin changes (the Node app's academics/students.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentsController.List(System.String,System.String,System.String,System.String,System.String,System.String,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>
+            Students, newest first. q matches name, admission number, roll number, phones or a STU-/REG- id. Without page the
+            whole list comes back as an array (dropdowns); with page it is { rows, total, page, pageSize }.
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentsController.Summary(System.Threading.CancellationToken)">
+            <summary>Counts for the students dashboard tile.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentsController.RegistrationSummary(System.Threading.CancellationToken)">
+            <summary>Counts for the registration dashboard tile.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentsController.Subjects(System.Int32,System.Threading.CancellationToken)">
+            <summary>The electives a student takes, and their class's subjects with how each is taught.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentsController.Get(System.Int32,System.Threading.CancellationToken)">
+            <summary>One student's full record, with the registration details kept beside it.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentsController.Create(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>
+            Register a student. An empty admissionNo is generated. allowDuplicate confirms a same-name-and-birthday student;
+            billFees bills the class fee structure.
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentsController.Update(System.Int32,System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>Update a student; only the fields sent change.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentsController.Delete(System.Int32,System.Threading.CancellationToken)">
+            <summary>Delete a student with their stored photos and signatures.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.StudentsController.IsTruthy(SchoolERP.Application.Common.Helpers.Body,System.String)">
+            <summary>JavaScript's Boolean(value): false for missing, null, false, 0, "" â€” true for anything else.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.TimetableController">
+            <summary>/api/timetable: any staff member reads, only an admin changes (the Node app's academics/timetable.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.TimetableController.#ctor(SchoolERP.Application.Modules.Academics.TimetableService)">
+            <summary>/api/timetable: any staff member reads, only an admin changes (the Node app's academics/timetable.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.TimetableController.Periods(System.String,System.Threading.CancellationToken)">
+            <summary>The bell times of a board (?board=), the same for every class of it.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.TimetableController.SavePeriods(System.Text.Json.Nodes.JsonNode,System.String,System.Threading.CancellationToken)">
+            <summary>[{ period, label, kind: class|break, start, end }]: rows numbered 1, 2, 3 ... in time order, not overlapping.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.TimetableController.List(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?classId= or ?staffId= : a class's week, or one teacher's week.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.TimetableController.Availability(System.String,System.Threading.CancellationToken)">
+            <summary>?staffId= : the periods the teacher cannot teach.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.TimetableController.SaveAvailability(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ staffId, blocked: [{ day, period }] } replaces the teacher's blocked periods.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.TimetableController.Generate(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ classIds?: [], replace?: boolean, days?: [1..6], maxTeacherPerDay?: n }: fills the week automatically.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.TimetableController.Place(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ classId, day, period, subjectId, staffId?, roomId? }: places a subject; the same class/day/period is replaced.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.RoomsController">
+            <summary>/api/scheduling/rooms (crudRouter over Room: name, kind, capacity; delete refuses a room still in use).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.RoomsController.#ctor(SchoolERP.Application.Interfaces.Services.ICrudService{SchoolERP.Domain.Entities.Room},SchoolERP.Application.Modules.Academics.SchedulingService)">
+            <summary>/api/scheduling/rooms (crudRouter over Room: name, kind, capacity; delete refuses a room still in use).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.RoomsController.Schedule(System.Int32,System.Threading.CancellationToken)">
+            <summary>One room's weekly timetable use plus its bookings from today on.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Controllers.SchedulingController">
+            <summary>/api/scheduling: bookings, cover and the timetable report (admin only; the Node app's academics/scheduling.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.SchedulingController.#ctor(SchoolERP.Application.Modules.Academics.SchedulingService)">
+            <summary>/api/scheduling: bookings, cover and the timetable report (admin only; the Node app's academics/scheduling.routes.js).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.SchedulingController.Needed(System.String,System.Threading.CancellationToken)">
+            <summary>?date= : periods of teachers on approved leave that day, with any cover arranged.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.SchedulingController.Free(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?date=&amp;period= : teachers who can cover.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.SchedulingController.Substitutions(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>?from=&amp;to= (from defaults to 30 days ago).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.SchedulingController.Assign(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+            <summary>{ slotId, date, substituteId, reason? }</summary>
+        </member>
+        <member name="M:SchoolERP.API.Controllers.SchedulingController.Report(System.Threading.CancellationToken)">
+            <summary>Teacher load, class periods, unassigned periods and room use.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Extensions.ApiRequestExtensions">
+            <summary>Helpers shared by the middleware and filters: the request's API address and the signed-in user's id claim.</summary>
+        </member>
+        <member name="F:SchoolERP.API.Extensions.ApiRequestExtensions.OpenAreas">
+            <summary>Areas anyone may call without signing in (the auth endpoints that need a user check it themselves).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Extensions.ApiRequestExtensions.ApiPath(Microsoft.AspNetCore.Http.HttpRequest)">
+            <summary>The request path, e.g. /api/students/3.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Extensions.ApiRequestExtensions.ApiUrl(Microsoft.AspNetCore.Http.HttpRequest)">
+            <summary><see cref="M:SchoolERP.API.Extensions.ApiRequestExtensions.ApiPath(Microsoft.AspNetCore.Http.HttpRequest)"/> plus the query string.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Extensions.ApiRequestExtensions.ApiArea(System.String)">
+            <summary>The area of an /api/... path: "students" for /api/students/3; "" when there is none.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Extensions.ApiRequestExtensions.UserId(System.Security.Claims.ClaimsPrincipal)">
+            <summary>The "id" claim of a token JwtBearer accepted, or null when the request has no valid token.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Extensions.LoggingExtensions">
+            <summary>Global logging: console plus a daily file in logs/, so startup failures can be read after the window closes.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Extensions.MigrationBootstrapper">
+            <summary>
+            Development helper: when the Infrastructure project has no migrations yet, scaffolds InitialCreate into
+            SchoolERP.Infrastructure/Persistence/Migrations with the same EF Core code Add-Migration uses, so the first run needs no
+            command-line tools. The new files are compiled on the next build; restart once to apply them.
+            Later schema changes: Add-Migration &lt;Name&gt; -Project SchoolERP.Infrastructure -StartupProject SchoolERP.API -OutputDir Persistence/Migrations
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Extensions.MigrationBootstrapper.ScaffoldInitialMigrationIfMissing(System.IServiceProvider,Microsoft.AspNetCore.Hosting.IWebHostEnvironment,Microsoft.Extensions.Logging.ILogger)">
+            <summary>True when a migration was just written and the app should be restarted to apply it.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Extensions.QueryValue">
+            <summary>Query-string values read the way the Node handlers used req.query.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Extensions.QueryValue.Id(System.String)">
+            <summary>
+            An id filter: null (no filter) when missing or empty, the number when it is one, and -1 (matches nothing) otherwise:
+            MySQL compared an int column with a non-numeric string and found no rows.
+            </summary>
+        </member>
+        <member name="T:SchoolERP.API.Extensions.RawUpload">
+            <summary>
+            Uploads sent as the raw request body (the Node app's express.raw), and file downloads. Sending the bytes directly avoids a
+            multipart parser; the file's real type is checked from its content.
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Extensions.RawUpload.ReadBodyAsync(Microsoft.AspNetCore.Http.HttpRequest,System.Int32,System.Threading.CancellationToken)">
+            <summary>The whole body, refusing anything over <paramref name="limit"/> bytes with the Node app's 413.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Extensions.RawUpload.AuditAs(Microsoft.AspNetCore.Http.HttpContext,System.Object)">
+            <summary>Records these fields in the audit log instead of the uploaded bytes.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Extensions.RawUpload.EncodeUriComponent(System.String)">
+            <summary>encodeURIComponent: like Uri.EscapeDataString but leaving ! ' ( ) * as they are.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Extensions.RawUpload.File(Microsoft.AspNetCore.Http.HttpResponse,SchoolERP.Application.Modules.Files.FilesService.Download,System.String)">
+            <summary>Sends a stored file inline, with no type sniffing by the browser.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Extensions.SwaggerExtensions">
+            <summary>
+            API documentation: the OpenAPI document at /openapi/v1.json and Swagger UI at /swagger.
+            Sign in with POST /api/auth/login, then paste the token into "Authorize".
+            </summary>
+        </member>
+        <member name="T:SchoolERP.API.Filters.RequireAuthAttribute">
+            <summary>
+            The Node app's requireAuth on a single endpoint inside an open area (for example /api/auth/me): signs the user in from the
+            token, or answers 401/403 the same way the area-wide check does.
+            </summary>
+        </member>
+        <member name="T:SchoolERP.API.Filters.RequireRoleAttribute">
+            <summary>The Node app's requireRole(...) on one endpoint: only these base roles; anyone else gets 403 Forbidden.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Filters.RequireRoleAttribute.#ctor(System.String[])">
+            <summary>The Node app's requireRole(...) on one endpoint: only these base roles; anyone else gets 403 Forbidden.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Middleware.ApiAccessMiddleware">
+            <summary>
+            Who may reach which part of the API: a port of the Node app's routes/index.js. Runs after <see cref="T:SchoolERP.API.Middleware.UserContextMiddleware"/>
+            has signed the user in. In order:
+             1. /api/health, /api/auth, /api/public and /api/device are open (the auth endpoints that need a user check it themselves);
+             2. every successful change is written to the audit log;
+             3. parents and students reach only /api/portal (plus push and the app menu);
+             4. each area is limited to the roles that own it: "only" = every request, "writes" = any staff may read, only these roles change.
+            Rules for single endpoints inside an area live on the controllers ([RequireRole]).
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Middleware.ApiAccessMiddleware.#ctor(Microsoft.AspNetCore.Http.RequestDelegate)">
+            <summary>
+            Who may reach which part of the API: a port of the Node app's routes/index.js. Runs after <see cref="T:SchoolERP.API.Middleware.UserContextMiddleware"/>
+            has signed the user in. In order:
+             1. /api/health, /api/auth, /api/public and /api/device are open (the auth endpoints that need a user check it themselves);
+             2. every successful change is written to the audit log;
+             3. parents and students reach only /api/portal (plus push and the app menu);
+             4. each area is limited to the roles that own it: "only" = every request, "writes" = any staff may read, only these roles change.
+            Rules for single endpoints inside an area live on the controllers ([RequireRole]).
+            </summary>
+        </member>
+        <member name="F:SchoolERP.API.Middleware.ApiAccessMiddleware.TeacherTransport">
+            <summary>A teacher reaches transport only to take bus attendance (with the routes and stops it lists).</summary>
+        </member>
+        <member name="F:SchoolERP.API.Middleware.ApiAccessMiddleware.AuditDetailsKey">
+            <summary>HttpContext.Items key a controller sets to replace the audited request body (JSON text).</summary>
+        </member>
+        <member name="M:SchoolERP.API.Middleware.ApiAccessMiddleware.IsSensitiveRead(System.String)">
+            <summary>Reads that hand out whole tables are recorded too: a full backup and every CSV export.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Middleware.ApiAccessMiddleware.StartAuditTrailAsync(Microsoft.AspNetCore.Http.HttpContext,SchoolERP.Application.Common.Interfaces.ICurrentUser,Microsoft.Extensions.DependencyInjection.IServiceScopeFactory,System.String)">
+            <summary>
+            Records every successful change (POST/PUT/PATCH/DELETE) and the sensitive downloads, with who did it and what was sent
+            (secrets redacted). Written after the response; a logging failure never affects the request.
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Middleware.ApiAccessMiddleware.Redacted(System.String)">
+            <summary>The request body with password, token and secret fields replaced, cut to 2000 characters; null when empty.</summary>
+        </member>
+        <member name="M:SchoolERP.API.Middleware.ApiAccessMiddleware.SecretKey">
+            <remarks>
+            Pattern:<br/>
+            <code>password|token|secret</code><br/>
+            Options:<br/>
+            <code>RegexOptions.IgnoreCase</code><br/>
+            Explanation:<br/>
+            <code>
+            ○ Match with 3 alternative expressions, atomically.<br/>
+                ○ Match a sequence of expressions.<br/>
+                    ○ Match a character in the set [Pp].<br/>
+                    ○ Match a character in the set [Aa].<br/>
+                    ○ Match a character in the set [Ss] exactly 2 times.<br/>
+                    ○ Match a character in the set [Ww].<br/>
+                    ○ Match a character in the set [Oo].<br/>
+                    ○ Match a character in the set [Rr].<br/>
+                    ○ Match a character in the set [Dd].<br/>
+                ○ Match a sequence of expressions.<br/>
+                    ○ Match a character in the set [Tt].<br/>
+                    ○ Match a character in the set [Oo].<br/>
+                    ○ Match a character in the set [Kk\u212A].<br/>
+                    ○ Match a character in the set [Ee].<br/>
+                    ○ Match a character in the set [Nn].<br/>
+                ○ Match a sequence of expressions.<br/>
+                    ○ Match a character in the set [Ss].<br/>
+                    ○ Match a character in the set [Ee].<br/>
+                    ○ Match a character in the set [Cc].<br/>
+                    ○ Match a character in the set [Rr].<br/>
+                    ○ Match a character in the set [Ee].<br/>
+                    ○ Match a character in the set [Tt].<br/>
+            </code>
+            </remarks>
+        </member>
+        <member name="M:SchoolERP.API.Middleware.ApiAccessMiddleware.BackupPath">
+            <remarks>
+            Pattern:<br/>
+            <code>^/api/data/backup/?$</code><br/>
+            Explanation:<br/>
+            <code>
+            ○ Match if at the beginning of the string.<br/>
+            ○ Match the string "/api/data/backup".<br/>
+            ○ Match '/' atomically, optionally.<br/>
+            ○ Match if at the end of the string or if before an ending newline.<br/>
+            </code>
+            </remarks>
+        </member>
+        <member name="M:SchoolERP.API.Middleware.ApiAccessMiddleware.ExportPath">
+            <remarks>
+            Pattern:<br/>
+            <code>^/api/data/export/[a-z-]+/?$</code><br/>
+            Explanation:<br/>
+            <code>
+            ○ Match if at the beginning of the string.<br/>
+            ○ Match the string "/api/data/export/".<br/>
+            ○ Match a character in the set [\-a-z] atomically at least once.<br/>
+            ○ Match '/' atomically, optionally.<br/>
+            ○ Match if at the end of the string or if before an ending newline.<br/>
+            </code>
+            </remarks>
+        </member>
+        <member name="T:SchoolERP.API.Middleware.ErrorHandlingMiddleware">
+            <summary>
+            Every failure becomes { "error": "..." } with the status the Node app used (middleware/errorMiddleware.js):
+            HttpException keeps its status (plus "errors" for validation lists), database problems are translated without exposing
+            table or column names, and anything else is a logged 500 "Server error".
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Middleware.ErrorHandlingMiddleware.#ctor(Microsoft.AspNetCore.Http.RequestDelegate,Microsoft.Extensions.Logging.ILogger{SchoolERP.API.Middleware.ErrorHandlingMiddleware})">
+            <summary>
+            Every failure becomes { "error": "..." } with the status the Node app used (middleware/errorMiddleware.js):
+            HttpException keeps its status (plus "errors" for validation lists), database problems are translated without exposing
+            table or column names, and anything else is a logged 500 "Server error".
+            </summary>
+        </member>
+        <member name="T:SchoolERP.API.Middleware.UserContextMiddleware">
+            <summary>
+            Token + claims → the current user. Runs after UseAuthentication (JwtBearer has already checked the token's signature,
+            issuer, audience and expiry and put its claims on HttpContext.User). For every /api address outside the open areas it
+            loads the user named by the "id" claim and fills <see cref="T:SchoolERP.Application.Common.Interfaces.ICurrentUser"/>, or answers
+            401/403 with the Node app's { "error": ... } body (see <see cref="T:SchoolERP.Application.Modules.Authentication.RequestAuthenticator"/>).
+            </summary>
+        </member>
+        <member name="M:SchoolERP.API.Middleware.UserContextMiddleware.#ctor(Microsoft.AspNetCore.Http.RequestDelegate)">
+            <summary>
+            Token + claims → the current user. Runs after UseAuthentication (JwtBearer has already checked the token's signature,
+            issuer, audience and expiry and put its claims on HttpContext.User). For every /api address outside the open areas it
+            loads the user named by the "id" claim and fills <see cref="T:SchoolERP.Application.Common.Interfaces.ICurrentUser"/>, or answers
+            401/403 with the Node app's { "error": ... } body (see <see cref="T:SchoolERP.Application.Modules.Authentication.RequestAuthenticator"/>).
+            </summary>
+        </member>
+        <member name="T:Program">
+            <summary>
+            Auto-generated public partial Program class for top-level statement apps.
+            </summary>
+        </member>
+        <member name="T:System.Text.RegularExpressions.Generated.SecretKey_0">
+            <summary>Custom <see cref="T:System.Text.RegularExpressions.Regex"/>-derived type for the SecretKey method.</summary>
+        </member>
+        <member name="F:System.Text.RegularExpressions.Generated.SecretKey_0.Instance">
+            <summary>Cached, thread-safe singleton instance.</summary>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.SecretKey_0.#ctor">
+            <summary>Initializes the instance.</summary>
+        </member>
+        <member name="T:System.Text.RegularExpressions.Generated.SecretKey_0.RunnerFactory">
+            <summary>Provides a factory for creating <see cref="T:System.Text.RegularExpressions.RegexRunner"/> instances to be used by methods on <see cref="T:System.Text.RegularExpressions.Regex"/>.</summary>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.SecretKey_0.RunnerFactory.CreateInstance">
+            <summary>Creates an instance of a <see cref="T:System.Text.RegularExpressions.RegexRunner"/> used by methods on <see cref="T:System.Text.RegularExpressions.Regex"/>.</summary>
+        </member>
+        <member name="T:System.Text.RegularExpressions.Generated.SecretKey_0.RunnerFactory.Runner">
+            <summary>Provides the runner that contains the custom logic implementing the specified regular expression.</summary>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.SecretKey_0.RunnerFactory.Runner.Scan(System.ReadOnlySpan{System.Char})">
+            <summary>Scan the <paramref name="inputSpan"/> starting from base.runtextstart for the next match.</summary>
+            <param name="inputSpan">The text being scanned by the regular expression.</param>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.SecretKey_0.RunnerFactory.Runner.TryFindNextPossibleStartingPosition(System.ReadOnlySpan{System.Char})">
+            <summary>Search <paramref name="inputSpan"/> starting from base.runtextpos for the next location a match could possibly start.</summary>
+            <param name="inputSpan">The text being scanned by the regular expression.</param>
+            <returns>true if a possible match was found; false if no more matches are possible.</returns>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.SecretKey_0.RunnerFactory.Runner.TryMatchAtCurrentPosition(System.ReadOnlySpan{System.Char})">
+            <summary>Determine whether <paramref name="inputSpan"/> at base.runtextpos is a match for the regular expression.</summary>
+            <param name="inputSpan">The text being scanned by the regular expression.</param>
+            <returns>true if the regular expression matches at the current position; otherwise, false.</returns>
+        </member>
+        <member name="T:System.Text.RegularExpressions.Generated.BackupPath_1">
+            <summary>Custom <see cref="T:System.Text.RegularExpressions.Regex"/>-derived type for the BackupPath method.</summary>
+        </member>
+        <member name="F:System.Text.RegularExpressions.Generated.BackupPath_1.Instance">
+            <summary>Cached, thread-safe singleton instance.</summary>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.BackupPath_1.#ctor">
+            <summary>Initializes the instance.</summary>
+        </member>
+        <member name="T:System.Text.RegularExpressions.Generated.BackupPath_1.RunnerFactory">
+            <summary>Provides a factory for creating <see cref="T:System.Text.RegularExpressions.RegexRunner"/> instances to be used by methods on <see cref="T:System.Text.RegularExpressions.Regex"/>.</summary>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.BackupPath_1.RunnerFactory.CreateInstance">
+            <summary>Creates an instance of a <see cref="T:System.Text.RegularExpressions.RegexRunner"/> used by methods on <see cref="T:System.Text.RegularExpressions.Regex"/>.</summary>
+        </member>
+        <member name="T:System.Text.RegularExpressions.Generated.BackupPath_1.RunnerFactory.Runner">
+            <summary>Provides the runner that contains the custom logic implementing the specified regular expression.</summary>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.BackupPath_1.RunnerFactory.Runner.Scan(System.ReadOnlySpan{System.Char})">
+            <summary>Scan the <paramref name="inputSpan"/> starting from base.runtextstart for the next match.</summary>
+            <param name="inputSpan">The text being scanned by the regular expression.</param>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.BackupPath_1.RunnerFactory.Runner.TryFindNextPossibleStartingPosition(System.ReadOnlySpan{System.Char})">
+            <summary>Search <paramref name="inputSpan"/> starting from base.runtextpos for the next location a match could possibly start.</summary>
+            <param name="inputSpan">The text being scanned by the regular expression.</param>
+            <returns>true if a possible match was found; false if no more matches are possible.</returns>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.BackupPath_1.RunnerFactory.Runner.TryMatchAtCurrentPosition(System.ReadOnlySpan{System.Char})">
+            <summary>Determine whether <paramref name="inputSpan"/> at base.runtextpos is a match for the regular expression.</summary>
+            <param name="inputSpan">The text being scanned by the regular expression.</param>
+            <returns>true if the regular expression matches at the current position; otherwise, false.</returns>
+        </member>
+        <member name="T:System.Text.RegularExpressions.Generated.ExportPath_2">
+            <summary>Custom <see cref="T:System.Text.RegularExpressions.Regex"/>-derived type for the ExportPath method.</summary>
+        </member>
+        <member name="F:System.Text.RegularExpressions.Generated.ExportPath_2.Instance">
+            <summary>Cached, thread-safe singleton instance.</summary>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.ExportPath_2.#ctor">
+            <summary>Initializes the instance.</summary>
+        </member>
+        <member name="T:System.Text.RegularExpressions.Generated.ExportPath_2.RunnerFactory">
+            <summary>Provides a factory for creating <see cref="T:System.Text.RegularExpressions.RegexRunner"/> instances to be used by methods on <see cref="T:System.Text.RegularExpressions.Regex"/>.</summary>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.ExportPath_2.RunnerFactory.CreateInstance">
+            <summary>Creates an instance of a <see cref="T:System.Text.RegularExpressions.RegexRunner"/> used by methods on <see cref="T:System.Text.RegularExpressions.Regex"/>.</summary>
+        </member>
+        <member name="T:System.Text.RegularExpressions.Generated.ExportPath_2.RunnerFactory.Runner">
+            <summary>Provides the runner that contains the custom logic implementing the specified regular expression.</summary>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.ExportPath_2.RunnerFactory.Runner.Scan(System.ReadOnlySpan{System.Char})">
+            <summary>Scan the <paramref name="inputSpan"/> starting from base.runtextstart for the next match.</summary>
+            <param name="inputSpan">The text being scanned by the regular expression.</param>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.ExportPath_2.RunnerFactory.Runner.TryFindNextPossibleStartingPosition(System.ReadOnlySpan{System.Char})">
+            <summary>Search <paramref name="inputSpan"/> starting from base.runtextpos for the next location a match could possibly start.</summary>
+            <param name="inputSpan">The text being scanned by the regular expression.</param>
+            <returns>true if a possible match was found; false if no more matches are possible.</returns>
+        </member>
+        <member name="M:System.Text.RegularExpressions.Generated.ExportPath_2.RunnerFactory.Runner.TryMatchAtCurrentPosition(System.ReadOnlySpan{System.Char})">
+            <summary>Determine whether <paramref name="inputSpan"/> at base.runtextpos is a match for the regular expression.</summary>
+            <param name="inputSpan">The text being scanned by the regular expression.</param>
+            <returns>true if the regular expression matches at the current position; otherwise, false.</returns>
+        </member>
+        <member name="T:System.Text.RegularExpressions.Generated.Utilities">
+            <summary>Helper methods used by generated <see cref="T:System.Text.RegularExpressions.Regex"/>-derived implementations.</summary>
+        </member>
+        <member name="F:System.Text.RegularExpressions.Generated.Utilities.s_defaultTimeout">
+            <summary>Default timeout value set in <see cref="T:System.AppContext"/>, or <see cref="F:System.Text.RegularExpressions.Regex.InfiniteMatchTimeout"/> if none was set.</summary>
+        </member>
+        <member name="F:System.Text.RegularExpressions.Generated.Utilities.s_hasTimeout">
+            <summary>Whether <see cref="F:System.Text.RegularExpressions.Generated.Utilities.s_defaultTimeout"/> is non-infinite.</summary>
+        </member>
+        <member name="F:System.Text.RegularExpressions.Generated.Utilities.s_ascii_20000000000000FEFFFF07">
+            <summary>Supports searching for characters in or not in "-abcdefghijklmnopqrstuvwxyz".</summary>
+        </member>
+        <member name="F:System.Text.RegularExpressions.Generated.Utilities.s_indexOfAnyStrings_OrdinalIgnoreCase_4D47CAF2C9F9E29EED61492C6FCEE1BADF6DFB4A6F57A807372D380143B76B35">
+            <summary>Supports searching for the specified strings.</summary>
+        </member>
+        <member name="M:Microsoft.AspNetCore.OpenApi.Generated.DocumentationCommentIdHelper.CreateDocumentationId(System.Type)">
+            <summary>
+            Generates a documentation comment ID for a type.
+            Example: T:Namespace.Outer+Inner`1 becomes T:Namespace.Outer.Inner`1
+            </summary>
+        </member>
+        <member name="M:Microsoft.AspNetCore.OpenApi.Generated.DocumentationCommentIdHelper.CreateDocumentationId(System.Reflection.PropertyInfo)">
+            <summary>
+            Generates a documentation comment ID for a property.
+            Example: P:Namespace.ContainingType.PropertyName or for an indexer P:Namespace.ContainingType.Item(System.Int32)
+            </summary>
+        </member>
+        <member name="M:Microsoft.AspNetCore.OpenApi.Generated.DocumentationCommentIdHelper.CreateDocumentationId(System.Type,System.String)">
+            <summary>
+            Generates a documentation comment ID for a property given its container type and property name.
+            Example: P:Namespace.ContainingType.PropertyName
+            </summary>
+        </member>
+        <member name="M:Microsoft.AspNetCore.OpenApi.Generated.DocumentationCommentIdHelper.CreateDocumentationId(System.Reflection.MethodInfo)">
+            <summary>
+            Generates a documentation comment ID for a method (or constructor).
+            For example:
+              M:Namespace.ContainingType.MethodName(ParamType1,ParamType2)~ReturnType
+              M:Namespace.ContainingType.#ctor(ParamType)
+            </summary>
+        </member>
+        <member name="M:Microsoft.AspNetCore.OpenApi.Generated.DocumentationCommentIdHelper.GetTypeDocId(System.Type,System.Boolean,System.Boolean)">
+            <summary>
+            Generates a documentation ID string for a type.
+            This method handles nested types (replacing '+' with '.'),
+            generic types, arrays, pointers, by-ref types, and generic parameters.
+            The <paramref name="includeGenericArguments"/> flag controls whether
+            constructed generic type arguments are emitted, while <paramref name="omitGenericArity"/>
+            controls whether the generic arity marker (e.g. "`1") is appended.
+            </summary>
+        </member>
+        <member name="M:Microsoft.AspNetCore.OpenApi.Generated.DocumentationCommentIdHelper.NormalizeDocId(System.String)">
+            <summary>
+            Normalizes a documentation comment ID to match the compiler-style format.
+            Strips the return type suffix for ordinary methods but retains it for conversion operators.
+            </summary>
+            <param name="docId">The documentation comment ID to normalize.</param>
+            <returns>The normalized documentation comment ID.</returns>
+        </member>
+    </members>
+</doc>

@@ -1,0 +1,46 @@
+@host = http://localhost:5139
+
+GET {{host}}/api/health
+
+###
+# @name login
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "admin@school.local", "password": "admin123" }
+
+###
+@token = {{login.response.body.$.token}}
+
+GET {{host}}/api/auth/me
+Authorization: Bearer {{token}}
+
+###
+POST {{host}}/api/classes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "name": "Grade 6", "section": "A", "room": "R-12" }
+
+###
+GET {{host}}/api/classes
+Authorization: Bearer {{token}}
+
+###
+GET {{host}}/api/classes/overview
+Authorization: Bearer {{token}}
+
+###
+POST {{host}}/api/students
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "firstName": "Asha", "lastName": "Verma", "dob": "2014-05-02", "gender": "female", "classId": 1, "bloodGroup": "B+" }
+
+###
+GET {{host}}/api/students?page=1&pageSize=10&q=asha
+Authorization: Bearer {{token}}
+
+###
+GET {{host}}/api/students/summary
+Authorization: Bearer {{token}}
