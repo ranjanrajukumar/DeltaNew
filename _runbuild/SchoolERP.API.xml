@@ -46,7 +46,7 @@
         <member name="T:SchoolERP.API.Controllers.ClassSubjectsController">
             <summary>/api/class-subjects: the subject map (the Node app's academics/classSubjects.routes.js).</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.#ctor(SchoolERP.Application.Modules.Academics.ClassSubjectsService,SchoolERP.Application.Interfaces.Services.ISubjectMapService)">
+        <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.#ctor(SchoolERP.Application.Interfaces.Services.IClassSubjectService,SchoolERP.Application.Interfaces.Services.ISubjectMapService)">
             <summary>/api/class-subjects: the subject map (the Node app's academics/classSubjects.routes.js).</summary>
         </member>
         <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.List(System.Threading.CancellationToken)">
@@ -58,7 +58,7 @@
         <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.Electives(System.String,System.Threading.CancellationToken)">
             <summary>One class's elective sheet: the groups and what each student chose.</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.ApplyTemplate(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+        <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.ApplyTemplate(SchoolERP.Contracts.Academics.ClassElectiveTemplateRequestDto,System.Threading.CancellationToken)">
             <summary>{ classIds?: [] }: gives each class its board's default subjects and periods per week.</summary>
         </member>
         <member name="M:SchoolERP.API.Controllers.ClassSubjectsController.ClassIdOf(System.String)">
@@ -67,7 +67,7 @@
         <member name="T:SchoolERP.API.Controllers.CalendarController">
             <summary>/api/calendar (the Node app's academics/calendar.routes.js).</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.CalendarController.#ctor(SchoolERP.Application.Modules.Academics.CalendarService)">
+        <member name="M:SchoolERP.API.Controllers.CalendarController.#ctor(SchoolERP.Application.Interfaces.Services.ICalendarService)">
             <summary>/api/calendar (the Node app's academics/calendar.routes.js).</summary>
         </member>
         <member name="M:SchoolERP.API.Controllers.CalendarController.List(System.String,System.String,System.Threading.CancellationToken)">
@@ -76,7 +76,7 @@
         <member name="T:SchoolERP.API.Controllers.HomeworkController">
             <summary>/api/homework (the Node app's academics/homework.routes.js).</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.HomeworkController.#ctor(SchoolERP.Application.Modules.Academics.HomeworkService)">
+        <member name="M:SchoolERP.API.Controllers.HomeworkController.#ctor(SchoolERP.Application.Interfaces.Services.IHomeworkService)">
             <summary>/api/homework (the Node app's academics/homework.routes.js).</summary>
         </member>
         <member name="M:SchoolERP.API.Controllers.HomeworkController.SaveSubmissions(System.Int32,System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
@@ -85,13 +85,13 @@
         <member name="T:SchoolERP.API.Controllers.StudyMaterialsController">
             <summary>/api/study-materials (the Node app's academics/materials.routes.js).</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.StudyMaterialsController.#ctor(SchoolERP.Application.Modules.Academics.StudyMaterialService)">
+        <member name="M:SchoolERP.API.Controllers.StudyMaterialsController.#ctor(SchoolERP.Application.Interfaces.Services.IStudyMaterialService)">
             <summary>/api/study-materials (the Node app's academics/materials.routes.js).</summary>
         </member>
         <member name="T:SchoolERP.API.Controllers.SyllabusController">
             <summary>/api/syllabus (the Node app's academics/syllabus.routes.js).</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.SyllabusController.#ctor(SchoolERP.Application.Modules.Academics.SyllabusService)">
+        <member name="M:SchoolERP.API.Controllers.SyllabusController.#ctor(SchoolERP.Application.Interfaces.Services.ISyllabusService)">
             <summary>/api/syllabus (the Node app's academics/syllabus.routes.js).</summary>
         </member>
         <member name="M:SchoolERP.API.Controllers.SyllabusController.Progress(System.Threading.CancellationToken)">
@@ -100,7 +100,7 @@
         <member name="T:SchoolERP.API.Controllers.OnlineClassesController">
             <summary>/api/online-classes (the Node app's academics/onlineClasses.routes.js).</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.OnlineClassesController.#ctor(SchoolERP.Application.Modules.Academics.OnlineClassesService)">
+        <member name="M:SchoolERP.API.Controllers.OnlineClassesController.#ctor(SchoolERP.Application.Interfaces.Services.IOnlineClassService)">
             <summary>/api/online-classes (the Node app's academics/onlineClasses.routes.js).</summary>
         </member>
         <member name="M:SchoolERP.API.Controllers.OnlineClassesController.List(System.String,System.String,System.Threading.CancellationToken)">
@@ -217,13 +217,13 @@
         <member name="M:SchoolERP.API.Controllers.AuthController.Health">
             <summary>Is the API up.</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.AuthController.Login(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+        <member name="M:SchoolERP.API.Controllers.AuthController.Login(SchoolERP.Contracts.Platform.LoginRequestDto,System.Threading.CancellationToken)">
             <summary>Sign in with an email (or a student's admission number) and password.</summary>
         </member>
         <member name="M:SchoolERP.API.Controllers.AuthController.Me(System.Threading.CancellationToken)">
             <summary>The signed-in user's own profile and access, so the UI can hide what a custom role does not include.</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.AuthController.ChangePassword(System.Text.Json.Nodes.JsonObject,System.Threading.CancellationToken)">
+        <member name="M:SchoolERP.API.Controllers.AuthController.ChangePassword(SchoolERP.Contracts.Platform.ChangePasswordRequestDto,System.Threading.CancellationToken)">
             <summary>{ currentPassword, newPassword }: anyone signed in, and the only thing a temporary password may do.</summary>
         </member>
         <member name="T:SchoolERP.API.Controllers.ClassesController">
@@ -238,28 +238,28 @@
         <member name="M:SchoolERP.API.Controllers.ClassesController.Map(System.Int32,System.Threading.CancellationToken)">
             <summary>One class on a page: teacher, subject map, fees, activities, transport, hostel and timetable.</summary>
         </member>
-        <member name="T:SchoolERP.API.Controllers.CrudController`1">
+        <member name="T:SchoolERP.API.Controllers.CrudController`2">
             <summary>
             The standard list/create/update/delete endpoints for one table (the Node app's crudRouter). A derived controller sets its
-            route, the writable <see cref="P:SchoolERP.API.Controllers.CrudController`1.Fields"/>, and overrides <see cref="M:SchoolERP.API.Controllers.CrudController`1.ListAsync(System.Threading.CancellationToken)"/> when the list needs joined data.
+            route, the writable <see cref="P:SchoolERP.API.Controllers.CrudController`2.Fields"/>, and overrides <see cref="M:SchoolERP.API.Controllers.CrudController`2.ListAsync(System.Threading.CancellationToken)"/> when the list needs joined data.
             </summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.CrudController`1.#ctor(SchoolERP.Application.Interfaces.Services.ICrudService{`0})">
+        <member name="M:SchoolERP.API.Controllers.CrudController`2.#ctor(SchoolERP.Application.Interfaces.Services.ICrudService{`0})">
             <summary>
             The standard list/create/update/delete endpoints for one table (the Node app's crudRouter). A derived controller sets its
-            route, the writable <see cref="P:SchoolERP.API.Controllers.CrudController`1.Fields"/>, and overrides <see cref="M:SchoolERP.API.Controllers.CrudController`1.ListAsync(System.Threading.CancellationToken)"/> when the list needs joined data.
+            route, the writable <see cref="P:SchoolERP.API.Controllers.CrudController`2.Fields"/>, and overrides <see cref="M:SchoolERP.API.Controllers.CrudController`2.ListAsync(System.Threading.CancellationToken)"/> when the list needs joined data.
             </summary>
         </member>
-        <member name="P:SchoolERP.API.Controllers.CrudController`1.Fields">
+        <member name="P:SchoolERP.API.Controllers.CrudController`2.Fields">
             <summary>The writable fields, fixed in code.</summary>
         </member>
-        <member name="P:SchoolERP.API.Controllers.CrudController`1.WriteRoles">
+        <member name="P:SchoolERP.API.Controllers.CrudController`2.WriteRoles">
             <summary>The Node app's writeRoles(...) on the router: who may create, update and delete. Null = whoever reaches the route.</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.CrudController`1.ListAsync(System.Threading.CancellationToken)">
+        <member name="M:SchoolERP.API.Controllers.CrudController`2.ListAsync(System.Threading.CancellationToken)">
             <summary>What GET / returns; every row newest first unless overridden.</summary>
         </member>
-        <member name="M:SchoolERP.API.Controllers.CrudController`1.DeleteAsync(System.Int32,System.Threading.CancellationToken)">
+        <member name="M:SchoolERP.API.Controllers.CrudController`2.DeleteAsync(System.Int32,System.Threading.CancellationToken)">
             <summary>What DELETE /:id does; a plain delete unless overridden (a missing row is not an error).</summary>
         </member>
         <member name="T:SchoolERP.API.Controllers.ExamsController">
@@ -593,6 +593,9 @@
         </member>
         <member name="M:SchoolERP.API.Extensions.RawUpload.File(Microsoft.AspNetCore.Http.HttpResponse,SchoolERP.Application.Modules.Files.FilesService.Download,System.String)">
             <summary>Sends a stored file inline, with no type sniffing by the browser.</summary>
+        </member>
+        <member name="T:SchoolERP.API.Extensions.RequestDtoMapper">
+            <summary>Converts typed API contracts into the application layer's validated request value.</summary>
         </member>
         <member name="T:SchoolERP.API.Extensions.SwaggerExtensions">
             <summary>

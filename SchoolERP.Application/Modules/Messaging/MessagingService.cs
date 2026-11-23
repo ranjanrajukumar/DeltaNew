@@ -1,17 +1,18 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
-using SchoolERP.Application.Modules.Settings;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
-using AttendanceMark = SchoolERP.Domain.Entities.Attendance;
 
 namespace SchoolERP.Application.Modules.Messaging;
 
 /// <summary>Email and SMS to families and staff (the Node app's messaging/messaging.service.js).</summary>
-public sealed partial class MessagingService(IApplicationDbContext db, IMessageDelivery delivery, SettingsReader settings)
+public sealed partial class MessagingService(
+    IMessageRepository messages, IUnitOfWork unitOfWork, IMessageDelivery delivery, ISettingsReader settings) : IMessagingService
 {
     public static readonly string[] Channels = ["email", "sms"];
     private const int SmsMax = 1000;
@@ -80,8 +81,8 @@ public sealed partial class MessagingService(IApplicationDbContext db, IMessageD
             Error = result.Error,
             SentByName = sentByName,
         };
-        db.Set<Message>().Add(row);
-        await db.SaveChangesAsync(ct);
+        messages.Add(row);
+        await unitOfWork.SaveChangesAsync(ct);
         return row;
     }
 
@@ -92,12 +93,12 @@ public sealed partial class MessagingService(IApplicationDbContext db, IMessageD
     public async Task<Message> SendAbsenceAlertAsync(int studentId, DateOnly? date, Sender user, string? template = null, CancellationToken ct = default)
     {
         var day = date ?? Clock.Today();
-        if (!await db.Set<AttendanceMark>().AnyAsync(a => a.StudentId == studentId && a.Date == day && a.Status == "absent", ct))
+        if (!await messages.IsMarkedAbsentAsync(studentId, day, ct))
             throw HttpException.BadRequest("That student is not marked absent on this date");
-        if (await db.Set<AbsenceAlert>().AnyAsync(a => a.StudentId == studentId && a.Date == day && a.Method == "sms", ct))
+        if (await messages.AbsenceSmsLoggedAsync(studentId, day, ct))
             throw HttpException.Conflict("An SMS was already sent for this absence");
 
-        var student = await db.Set<Student>().AsNoTracking().Include(s => s.SchoolClass).FirstAsync(s => s.Id == studentId, ct);
+        var student = await messages.StudentWithClassAsync(studentId, ct);
         if (delivery.NormalizePhone(student.GuardianPhone) is null)
             throw HttpException.BadRequest("This student has no valid guardian phone number");
 
@@ -113,11 +114,11 @@ public sealed partial class MessagingService(IApplicationDbContext db, IMessageD
         var message = await SendMessageAsync("sms", student.GuardianPhone, student.GuardianName, null, text, "absence", studentId, user.Name, ct);
         if (message.Status == "sent")
         {
-            db.Set<AbsenceAlert>().Add(new AbsenceAlert
+            messages.AddAbsenceAlert(new AbsenceAlert
             {
                 StudentId = studentId, Date = day, Method = "sms", Note = "Automatic SMS", NotifiedBy = user.Id, NotifiedByName = user.Name,
             });
-            await db.SaveChangesAsync(ct);
+            await unitOfWork.SaveChangesAsync(ct);
         }
         return message;
     }

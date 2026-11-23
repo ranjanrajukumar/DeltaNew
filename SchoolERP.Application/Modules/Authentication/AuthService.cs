@@ -1,7 +1,8 @@
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
 
@@ -9,11 +10,13 @@ namespace SchoolERP.Application.Modules.Authentication;
 
 /// <summary>Signing in and the signed-in user's own account (the Node app's platform/auth.routes.js, auth.service.js and loginActivity.js).</summary>
 public sealed class AuthService(
-    IApplicationDbContext db,
+    IUserRepository users,
+    ILoginEventRepository loginEvents,
+    IUnitOfWork unitOfWork,
     IPasswordHasher hasher,
     ITokenService tokens,
     ICurrentUser currentUser,
-    IClassService classes)
+    IClassService classes) : IAuthService
 {
     private const int RetentionDays = 180;
 
@@ -29,8 +32,8 @@ public sealed class AuthService(
         User? user = null;
         if (who != "")
             user = who.Contains('@')
-                ? await db.Set<User>().AsNoTracking().FirstOrDefaultAsync(u => u.Email == who, ct)
-                : await UserForAdmissionNoAsync(who, ct);
+                ? await users.GetByEmailAsync(who, ct)
+                : await users.GetByAdmissionNoAsync(who, ct);
         var valid = hasher.Verify(password ?? "", user?.PasswordHash ?? DummyHash);
         if (user is null || !valid) return null;
         return (SessionFor(user), user);
@@ -44,15 +47,6 @@ public sealed class AuthService(
         mustChangePassword = user.MustChangePassword,
     };
 
-    /// <summary>The login user for a student typed as an admission number, or null.</summary>
-    private async Task<User?> UserForAdmissionNoAsync(string admissionNo, CancellationToken ct)
-    {
-        var studentId = await db.Set<Student>().Where(s => s.AdmissionNo == admissionNo).Select(s => (int?)s.Id).FirstOrDefaultAsync(ct);
-        if (studentId is null) return null;
-        var userId = await db.Set<StudentAccount>().Where(a => a.StudentId == studentId).Select(a => (int?)a.UserId).FirstOrDefaultAsync(ct);
-        return userId is null ? null : await db.Set<User>().AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId, ct);
-    }
-
     /// <summary>Records a sign-in attempt. It must never break signing in, so failures are swallowed.</summary>
     public async Task RecordLoginAsync(string? ip, string? userAgent, string? email, User? user, bool success, CancellationToken ct = default)
     {
@@ -61,8 +55,8 @@ public sealed class AuthService(
             var emailText = email ?? "";
             var account = user;
             if (account is null && !success)
-                account = await db.Set<User>().AsNoTracking().FirstOrDefaultAsync(u => u.Email == emailText, ct);
-            db.Set<LoginEvent>().Add(new LoginEvent
+                account = await users.GetByEmailAsync(emailText, ct);
+            loginEvents.Add(new LoginEvent
             {
                 UserId = account?.Id,
                 Email = emailText.Length > 150 ? emailText[..150] : emailText,
@@ -71,11 +65,11 @@ public sealed class AuthService(
                 Ip = string.IsNullOrEmpty(ip) ? null : ip.Length > 64 ? ip[..64] : ip,
                 UserAgent = string.IsNullOrEmpty(userAgent) ? null : userAgent.Length > 200 ? userAgent[..200] : userAgent,
             });
-            await db.SaveChangesAsync(ct);
+            await unitOfWork.SaveChangesAsync(ct);
             if (success)
             {
                 var cutoff = DateTime.UtcNow.AddDays(-RetentionDays);
-                await db.Set<LoginEvent>().Where(e => e.CreatedAt < cutoff).ExecuteDeleteAsync(ct);
+                await loginEvents.DeleteOlderThanAsync(cutoff, ct);
             }
         }
         catch (Exception) when (!ct.IsCancellationRequested)
@@ -103,55 +97,11 @@ public sealed class AuthService(
         var next = newPassword is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
         if (next is null || next.Length < 8) throw HttpException.BadRequest("The new password must be at least 8 characters");
         if (next == currentPassword) throw HttpException.BadRequest("Choose a password different from the current one");
-        var user = await db.Set<User>().FirstAsync(u => u.Id == currentUser.Id, ct);
+        var user = await users.FindExistingAsync(currentUser.Id, ct);
         if (!hasher.Verify(currentPassword ?? "", user.PasswordHash))
             throw HttpException.BadRequest("The current password is not correct");
         user.PasswordHash = hasher.Hash(next);
         user.MustChangePassword = false;
-        await db.SaveChangesAsync(ct);
-    }
-}
-
-/// <summary>
-/// The Node app's requireAuth: given the user id from an already-validated token (JwtBearer), loads the user so a deleted
-/// account or a changed role takes effect immediately. A temporary password must be changed first; a custom role is checked
-/// against its modules; then role rights.
-/// </summary>
-public sealed class RequestAuthenticator(
-    IApplicationDbContext db,
-    ICurrentUserSetter setter,
-    RightsService rights)
-{
-    /// <summary>Null when the request may go on; otherwise the status and JSON body to answer with.</summary>
-    public async Task<(int Status, object Body)?> AuthenticateAsync(int? userId, string method, string originalUrl, CancellationToken ct = default)
-    {
-        var user = userId is null
-            ? null
-            : await db.Set<User>().AsNoTracking().Include(u => u.RoleNavigation).FirstOrDefaultAsync(u => u.Id == userId, ct);
-        if (user is null) return (401, new { error = "Unauthorized" });
-
-        if (user.MustChangePassword && !originalUrl.StartsWith("/api/auth/", StringComparison.Ordinal))
-            return (403, new { error = "Please change your password first.", mustChangePassword = true });
-
-        var role = user.RoleNavigation?.BaseRole ?? user.Role;
-        string? customRole = null;
-        JsonObject? permissions = null;
-        if (user.RoleId is not null)
-        {
-            customRole = user.RoleNavigation?.Name;
-            permissions = new JsonObject(); // a role that vanished grants nothing
-            if (user.RoleNavigation is { } r)
-            {
-                try { permissions = JsonNode.Parse(r.Permissions) as JsonObject ?? new JsonObject(); }
-                catch (System.Text.Json.JsonException) { }
-            }
-        }
-        setter.Set(user.Id, user.Name, role, user.StaffId, user.MustChangePassword, customRole, permissions);
-
-        if (permissions is not null && !AccessRules.Permits(permissions, method, originalUrl))
-            return (403, new { error = "Your role does not include this area" });
-        if (!await rights.AllowsAsync(role, method, originalUrl, ct))
-            return (403, new { error = "Your role is not allowed to do this here" });
-        return null;
+        await unitOfWork.SaveChangesAsync(ct);
     }
 }

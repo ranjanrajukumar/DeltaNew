@@ -5,9 +5,9 @@ using SchoolERP.Infrastructure.Persistence;
 namespace SchoolERP.Infrastructure.Repositories;
 
 /// <summary>EF Core implementation of <see cref="IRepository{T}"/>; module repositories derive from it.</summary>
-public class Repository<T>(SchoolErpDbContext db) : IRepository<T> where T : class
+public class Repository<T>(ApplicationDbContext db) : IRepository<T> where T : class
 {
-    protected SchoolErpDbContext Db { get; } = db;
+    protected ApplicationDbContext Db { get; } = db;
 
     protected DbSet<T> Set => Db.Set<T>();
 

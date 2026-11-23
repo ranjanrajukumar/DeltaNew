@@ -1,20 +1,21 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Crud;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
-using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Application.Modules.Academics;
 using SchoolERP.Application.Modules.Boards;
 using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
-using AttendanceMark = SchoolERP.Domain.Entities.Attendance;
 
 namespace SchoolERP.Application.Modules.Exams;
 
 /// <summary>Exams, mark entry, results and report cards (the Node app's exams/exams.service.js).</summary>
-public sealed class ExamsService(IApplicationDbContext db, ISubjectMapService subjectMap, GradingService grading, IBoardService boards)
+public sealed class ExamsService(
+    IExamRepository examRepo, IMarkRepository markRepo, IExamQueryRepository examQueries, IUnitOfWork unitOfWork,
+    ISubjectMapService subjectMap, IGradingService grading, IBoardService boards) : IExamsService
 {
     public static readonly string[] Fields = ["name", "classId", "startDate", "endDate", "maxMarks"];
 
@@ -36,8 +37,7 @@ public sealed class ExamsService(IApplicationDbContext db, ISubjectMapService su
 
     public async Task<List<JsonObject>> ListAsync(CancellationToken ct = default)
     {
-        var rows = await db.Set<Exam>().AsNoTracking().Include(e => e.SchoolClass).Where(e => e.SchoolClass != null)
-            .OrderByDescending(e => e.Id).ToListAsync(ct);
+        var rows = await examRepo.ListWithClassAsync(ct);
         return rows.Select(e =>
         {
             var o = JsonDefaults.ToJsonObject(e);
@@ -52,32 +52,31 @@ public sealed class ExamsService(IApplicationDbContext db, ISubjectMapService su
         if (body.IsBlankTrimmed("name") || !body.Truthy("classId")) throw HttpException.BadRequest("Name and class are required");
         var exam = new Exam();
         CrudService.Apply(body, Fields, exam);
-        db.Set<Exam>().Add(exam);
-        await db.SaveChangesAsync(ct);
+        examRepo.Add(exam);
+        await unitOfWork.SaveChangesAsync(ct);
         return exam.Id;
     }
 
     public async Task UpdateAsync(int id, Body body, CancellationToken ct = default)
     {
-        var exam = await db.Set<Exam>().FirstOrDefaultAsync(e => e.Id == id, ct) ?? throw HttpException.NotFound("Exam not found");
+        var exam = await examRepo.FindAsync(id, ct) ?? throw HttpException.NotFound("Exam not found");
         CrudService.Apply(body, Fields, exam);
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)
     {
-        var exam = await db.Set<Exam>().FirstOrDefaultAsync(e => e.Id == id, ct) ?? throw HttpException.NotFound("Exam not found");
-        db.Set<Exam>().Remove(exam);
-        await db.SaveChangesAsync(ct);
+        var exam = await examRepo.FindAsync(id, ct) ?? throw HttpException.NotFound("Exam not found");
+        examRepo.Remove(exam);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     public async Task<Exam> LoadAsync(int id, CancellationToken ct = default) =>
-        await db.Set<Exam>().AsNoTracking().FirstOrDefaultAsync(e => e.Id == id, ct) ?? throw HttpException.NotFound("Exam not found");
+        await examRepo.GetAsync(id, ct) ?? throw HttpException.NotFound("Exam not found");
 
     /// <summary>The subjects taught in the exam's class, in a stable order.</summary>
     public async Task<List<ExamSubject>> SubjectsAsync(Exam exam, CancellationToken ct = default) =>
-        (await db.Set<ClassSubject>().AsNoTracking().Include(c => c.Subject)
-            .Where(c => c.ClassId == exam.ClassId && c.Subject != null).OrderBy(c => c.SubjectId).ToListAsync(ct))
+        (await examRepo.ClassSubjectsAsync(exam.ClassId, ct))
         .Select(r => new ExamSubject(r.Subject!.Id, r.Subject.Name, r.Subject.Code, r.Component, r.IsElective, r.PracticalShare)).ToList();
 
     /// <summary>
@@ -87,11 +86,10 @@ public sealed class ExamsService(IApplicationDbContext db, ISubjectMapService su
     private async Task<HashSet<int>?> EditableSubjectIdsAsync(int userId, string? role, Exam exam, CancellationToken ct)
     {
         if (role == "admin") return null;
-        var email = await db.Set<User>().Where(u => u.Id == userId).Select(u => u.Email).FirstOrDefaultAsync(ct) ?? "";
-        var staff = await db.Set<Staff>().Where(s => s.Email == email && s.Status == "active").Select(s => s.Id).ToListAsync(ct);
+        var email = await examRepo.UserEmailAsync(userId, ct) ?? "";
+        var staff = await examRepo.ActiveStaffIdsByEmailAsync(email, ct);
         if (staff.Count == 0) return [];
-        return (await db.Set<ClassSubject>().Where(c => c.ClassId == exam.ClassId && c.StaffId != null && staff.Contains(c.StaffId.Value))
-            .Select(c => c.SubjectId).ToListAsync(ct)).ToHashSet();
+        return (await examRepo.SubjectIdsTaughtAsync(exam.ClassId, staff, ct)).ToHashSet();
     }
 
     private static JsonNode? SplitJson((int Theory, int Practical)? split) =>
@@ -105,8 +103,8 @@ public sealed class ExamsService(IApplicationDbContext db, ISubjectMapService su
         var exam = await LoadAsync(examId, ct);
         var facts = await subjectMap.ElectiveFactsAsync(exam.ClassId, ct);
         var subjects = await SubjectsAsync(exam, ct);
-        var students = await db.Set<Student>().AsNoTracking().Where(s => s.ClassId == exam.ClassId && s.Status == "active").OrderBy(s => s.FirstName).ToListAsync(ct);
-        var marks = await db.Set<Mark>().AsNoTracking().Where(m => m.ExamId == examId).ToListAsync(ct);
+        var students = await examRepo.ActiveStudentsAsync(exam.ClassId, ct);
+        var marks = await markRepo.OfExamAsync(examId, ct);
         var editable = await EditableSubjectIdsAsync(userId, role, exam, ct);
 
         var byStudent = new Dictionary<int, JsonObject>();
@@ -158,7 +156,7 @@ public sealed class ExamsService(IApplicationDbContext db, ISubjectMapService su
                 ? "You can only enter marks for the subjects assigned to you in this class"
                 : "You have no subjects assigned in this class. An admin must assign you in Class subjects, and your login email must match your staff profile email.");
 
-        var inClass = (await db.Set<Student>().Where(s => s.ClassId == exam.ClassId).Select(s => s.Id).ToListAsync(ct)).ToHashSet();
+        var inClass = (await examRepo.StudentIdsInClassAsync(exam.ClassId, ct)).ToHashSet();
         var subjects = await SubjectsAsync(exam, ct);
         var subjectById = subjects.GroupBy(s => s.Id).ToDictionary(g => g.Key, g => g.First());
         var facts = await subjectMap.ElectiveFactsAsync(exam.ClassId, ct);
@@ -209,26 +207,26 @@ public sealed class ExamsService(IApplicationDbContext db, ISubjectMapService su
             clean.Add((studentId, subjectId, total, practicalMarks));
         }
 
-        await db.InTransactionAsync(async () =>
+        await unitOfWork.InTransactionAsync(async () =>
         {
             foreach (var (studentId, subjectId, marks, practical) in clean)
             {
-                var row = await db.Set<Mark>().FirstOrDefaultAsync(m => m.ExamId == examId && m.StudentId == studentId && m.SubjectId == subjectId, ct);
+                var row = await markRepo.FindAsync(examId, studentId, subjectId, ct);
                 if (marks is null)
                 {
-                    if (row is not null) db.Set<Mark>().Remove(row);
+                    if (row is not null) markRepo.Remove(row);
                 }
                 else
                 {
                     if (row is null)
                     {
                         row = new Mark { ExamId = examId, StudentId = studentId, SubjectId = subjectId };
-                        db.Set<Mark>().Add(row);
+                        markRepo.Add(row);
                     }
                     row.Marks = marks.Value;
                     row.PracticalMarks = practical;
                 }
-                await db.SaveChangesAsync(ct);
+                await unitOfWork.SaveChangesAsync(ct);
             }
             return true;
         }, ct);
@@ -242,9 +240,9 @@ public sealed class ExamsService(IApplicationDbContext db, ISubjectMapService su
         policy ??= await grading.ForClassAsync(exam.ClassId, ct);
         var subjects = await SubjectsAsync(exam, ct);
         var facts = await subjectMap.ElectiveFactsAsync(exam.ClassId, ct);
-        var students = await db.Set<Student>().AsNoTracking().Where(s => s.ClassId == exam.ClassId).OrderBy(s => s.Id).ToListAsync(ct);
+        var students = await examRepo.StudentsInClassAsync(exam.ClassId, ct);
         var ids = students.Select(s => s.Id).ToList();
-        var marks = (await db.Set<Mark>().AsNoTracking().Where(m => m.ExamId == examId && ids.Contains(m.StudentId)).ToListAsync(ct))
+        var marks = (await markRepo.OfExamAsync(examId, ids, ct))
             .GroupBy(m => m.StudentId).ToDictionary(g => g.Key, g => g.ToList());
 
         var rows = students.Where(s => marks.ContainsKey(s.Id)).Select(s =>
@@ -275,20 +273,19 @@ public sealed class ExamsService(IApplicationDbContext db, ISubjectMapService su
     {
         var policy = await grading.ForClassAsync((await LoadAsync(examId, ct)).ClassId, ct);
         var (exam, rows) = await ResultsAsync(examId, policy, ct);
-        var student = await db.Set<Student>().AsNoTracking().Include(s => s.SchoolClass).FirstOrDefaultAsync(s => s.Id == studentId, ct)
+        var student = await examRepo.StudentWithClassAsync(studentId, ct)
             ?? throw HttpException.NotFound("Student not found");
         var teacher = student.SchoolClass?.ClassTeacherId is { } tid
-            ? await db.Set<Staff>().AsNoTracking().Where(s => s.Id == tid).Select(s => s.FirstName + " " + s.LastName).FirstOrDefaultAsync(ct)
+            ? await examRepo.StaffNameAsync(tid, ct)
             : null;
 
         var facts = await subjectMap.ElectiveFactsAsync(exam.ClassId, ct);
         var subjects = (await SubjectsAsync(exam, ct)).Where(s => facts.Takes(studentId, s.Id)).ToList();
-        var marks = await db.Set<Mark>().AsNoTracking().Where(m => m.ExamId == examId && m.StudentId == studentId).ToListAsync(ct);
+        var marks = await markRepo.OfStudentAsync(examId, studentId, ct);
         var marksBySubject = marks.GroupBy(m => m.SubjectId).ToDictionary(g => g.Key, g => (double)g.Last().Marks);
         var practicalBySubject = marks.Where(m => m.PracticalMarks is not null).GroupBy(m => m.SubjectId).ToDictionary(g => g.Key, g => (double)g.Last().PracticalMarks!.Value);
 
-        var attendance = await db.Set<AttendanceMark>().AsNoTracking().Where(a => a.StudentId == studentId).Select(a => a.Status).ToListAsync(ct);
-        var attended = attendance.Count(s => s != "absent");
+        var attendance = await examQueries.AttendanceSummaryAsync(studentId, ct);
 
         var board = await boards.OfClassAsync(student.SchoolClass, ct) ?? throw HttpException.Conflict("Add a board first");
         var layout = (await boards.ResolveRuleAsync(board, "report_card", ct: ct))?.Payload;
@@ -338,8 +335,8 @@ public sealed class ExamsService(IApplicationDbContext db, ISubjectMapService su
             ["classSize"] = rows.Count,
             ["attendance"] = new JsonObject
             {
-                ["days"] = attendance.Count,
-                ["percentage"] = attendance.Count > 0 ? Js.Round2(attended * 100.0 / attendance.Count) : null,
+                ["days"] = attendance.Days,
+                ["percentage"] = attendance.Days > 0 ? Js.Round2(attendance.Attended * 100.0 / attendance.Days) : null,
             },
         };
     }

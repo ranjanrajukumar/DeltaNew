@@ -1,11 +1,12 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Crud;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
-using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Application.Modules.Settings;
 using SchoolERP.Domain.Entities;
 
@@ -15,7 +16,7 @@ namespace SchoolERP.Application.Modules.HR;
 /// Staff records (the Node app's hr/staff.routes.js, staffFields.js, staffNumber.js and profileMine.js). Any staff role reads,
 /// only an admin changes; what a reader sees depends on their role.
 /// </summary>
-public sealed partial class StaffService(IApplicationDbContext db, SettingsReader settings)
+public sealed partial class StaffService(IStaffRepository staffRepo, IPayslipRepository payslips, IUnitOfWork unitOfWork, ISettingsReader settings) : IStaffService
 {
     /// <summary>
     /// A detail kept on a staff record. See: null = any staff role, "finance" = admin and accountant (payroll needs bank details),
@@ -111,15 +112,15 @@ public sealed partial class StaffService(IApplicationDbContext db, SettingsReade
     public async Task<string> NextStaffNoAsync(CancellationToken ct = default) =>
         await Numbering.NextAsync(
             await settings.GetStringAsync("numbering.staff", ct),
-            async () => await db.Set<Staff>().IgnoreQueryFilters().MaxAsync(s => (int?)s.Id, ct),
-            async candidate => await db.Set<Staff>().IgnoreQueryFilters().AnyAsync(s => s.StaffNo == candidate, ct));
+            async () => await staffRepo.MaxIdIncludingDeletedAsync(ct),
+            async candidate => await staffRepo.StaffNoTakenAsync(candidate, ct));
 
     public async Task<List<JsonObject>> ListAsync(string? role, CancellationToken ct = default) =>
-        (await db.Set<Staff>().AsNoTracking().Include(s => s.Department).OrderByDescending(s => s.Id).ToListAsync(ct))
+        (await staffRepo.ListWithDepartmentAsync(ct))
         .Select(s => Shape(s, role)).ToList();
 
     public async Task<JsonObject> GetAsync(int id, string? role, CancellationToken ct = default) =>
-        Shape(await db.Set<Staff>().AsNoTracking().Include(s => s.Department).FirstOrDefaultAsync(s => s.Id == id, ct)
+        Shape(await staffRepo.GetWithDepartmentAsync(id, ct)
             ?? throw HttpException.NotFound("Staff member not found"), role);
 
     public async Task<int> CreateAsync(Body body, CancellationToken ct = default)
@@ -129,8 +130,8 @@ public sealed partial class StaffService(IApplicationDbContext db, SettingsReade
         var staff = new Staff();
         CrudService.Apply(body, Writable, staff);
         if (string.IsNullOrEmpty(staff.StaffNo)) staff.StaffNo = await NextStaffNoAsync(ct);
-        db.Set<Staff>().Add(staff);
-        await db.SaveChangesAsync(ct);
+        staffRepo.Add(staff);
+        await unitOfWork.SaveChangesAsync(ct);
         return staff.Id;
     }
 
@@ -138,20 +139,19 @@ public sealed partial class StaffService(IApplicationDbContext db, SettingsReade
     {
         var errors = Problems(body, partial: true);
         if (errors.Count > 0) throw HttpException.BadRequest(errors[0]);
-        var staff = await db.Set<Staff>().FirstOrDefaultAsync(s => s.Id == id, ct) ?? throw HttpException.NotFound("Staff member not found");
+        var staff = await staffRepo.FindAsync(id, ct) ?? throw HttpException.NotFound("Staff member not found");
         var keep = staff.StaffNo;
         CrudService.Apply(body, Writable, staff);
         if (string.IsNullOrEmpty(staff.StaffNo)) staff.StaffNo = keep; // the number is never blanked
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)
     {
-        if (await db.Set<Payslip>().AnyAsync(p => p.StaffId == id, ct))
+        if (await payslips.AnyForStaffAsync(id, ct))
             throw HttpException.Conflict("This staff member has payslips on record. Mark them inactive instead of deleting.");
-        db.Set<Staff>().RemoveRange(await db.Set<Staff>().Where(s => s.Id == id).ToListAsync(ct));
-        db.Set<Photo>().RemoveRange(await db.Set<Photo>().Where(p => p.Entity == "staff" && p.EntityId == id).ToListAsync(ct));
-        await db.SaveChangesAsync(ct);
+        await staffRepo.RemoveWithPhotosAsync(id, ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     private static readonly (string Title, string[] Keys)[] ProfileGroups =
@@ -174,7 +174,7 @@ public sealed partial class StaffService(IApplicationDbContext db, SettingsReade
     /// <summary>A staff member's own record laid out in sections, with every detail the school holds about them (it is their own data).</summary>
     public async Task<object?> OwnProfileAsync(int staffId, CancellationToken ct = default)
     {
-        var staff = await db.Set<Staff>().AsNoTracking().Include(s => s.Department).FirstOrDefaultAsync(s => s.Id == staffId, ct);
+        var staff = await staffRepo.GetWithDepartmentAsync(staffId, ct);
         if (staff is null) return null;
         var s = JsonDefaults.ToJsonObject(staff);
         const string none = "—";

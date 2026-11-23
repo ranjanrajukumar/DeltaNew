@@ -1,18 +1,17 @@
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
-using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Application.Modules.Boards;
-using SchoolERP.Application.Modules.Exams;
 using SchoolERP.Application.Interfaces.Services;
-using SchoolERP.Domain.Entities;
-using AttendanceMark = SchoolERP.Domain.Entities.Attendance;
 
 namespace SchoolERP.Application.Modules.Academics;
 
 /// <summary>Year-end promotion (the Node app's academics/promotion.routes.js and promotionEligibility.js).</summary>
-public sealed class PromotionService(IApplicationDbContext db, IBoardService boards, ExamExtrasService examExtras, ISubjectMapService subjectMap)
+public sealed class PromotionService(
+    IPromotionRepository promotion, IExamGroupRepository groupRepo, IExamQueryRepository examQueries, IUnitOfWork unitOfWork,
+    IBoardService boards, IExamExtrasService examExtras, ISubjectMapService subjectMap) : IPromotionService
 {
     public sealed record Eligibility(int StudentId, double? Percentage, string? Result, double? Attendance, string Status, List<string> Reasons);
 
@@ -23,7 +22,7 @@ public sealed class PromotionService(IApplicationDbContext db, IBoardService boa
     /// </summary>
     public async Task<(string Board, JsonObject? Rule, List<Eligibility> Rows)> EligibilityAsync(int classId, CancellationToken ct = default)
     {
-        var cls = await db.Set<SchoolClass>().AsNoTracking().FirstOrDefaultAsync(c => c.Id == classId, ct) ?? throw HttpException.NotFound("Class not found");
+        var cls = await promotion.ClassAsync(classId, ct) ?? throw HttpException.NotFound("Class not found");
         var board = await boards.OfClassAsync(cls, ct) ?? throw HttpException.Conflict("Add a board first");
         var rule = await boards.ResolveRuleAsync(board, "promotion", ct: ct);
         if (rule is null) return (board.Name, null, []);
@@ -35,12 +34,11 @@ public sealed class PromotionService(IApplicationDbContext db, IBoardService boa
 
         var examRule = await boards.ResolveRuleAsync(board, "exam_pattern", ct: ct);
         var groupName = Body.AsString(examRule?.Payload?["groupName"]);
-        var group = examRule is null ? null : await db.Set<ExamGroup>().AsNoTracking().FirstOrDefaultAsync(g => g.ClassId == classId && g.Name == groupName, ct);
+        var group = examRule is null ? null : await groupRepo.GetAsync(classId, groupName, ct);
         var results = group is null ? [] : (await examExtras.GroupResultsAsync(group.Id, ct)).Rows.ToDictionary(r => r.StudentId);
 
-        var students = await db.Set<Student>().AsNoTracking().Where(s => s.ClassId == classId && s.Status == "active").OrderBy(s => s.Id).Select(s => s.Id).ToListAsync(ct);
-        var marks = await db.Set<AttendanceMark>().AsNoTracking().Where(a => students.Contains(a.StudentId)).Select(a => new { a.StudentId, a.Status }).ToListAsync(ct);
-        var days = marks.GroupBy(m => m.StudentId).ToDictionary(g => g.Key, g => (Total: g.Count(), Present: g.Count(m => m.Status != "absent")));
+        var students = await promotion.ActiveStudentIdsAsync(classId, ct);
+        var days = (await examQueries.AttendanceByStudentAsync(classId, ct)).ToDictionary(a => a.StudentId, a => (a.Total, a.Present));
 
         var rows = students.Select(id =>
         {
@@ -96,8 +94,8 @@ public sealed class PromotionService(IApplicationDbContext db, IBoardService boa
         var from = b.Int("fromClassId");
         int? to = b.Truthy("toClassId") ? b.Int("toClassId") : null;
         if (b.Truthy("toClassId") && b.Num("toClassId") == b.Num("fromClassId")) throw HttpException.BadRequest("Choose a different target class");
-        if (from is null || !await db.Set<SchoolClass>().AnyAsync(c => c.Id == from, ct)) throw HttpException.NotFound("From class not found");
-        if (b.Truthy("toClassId") && (to is null || !await db.Set<SchoolClass>().AnyAsync(c => c.Id == to, ct))) throw HttpException.NotFound("Target class not found");
+        if (from is null || !await promotion.ClassExistsAsync(from, ct)) throw HttpException.NotFound("From class not found");
+        if (b.Truthy("toClassId") && (to is null || !await promotion.ClassExistsAsync(to, ct))) throw HttpException.NotFound("Target class not found");
 
         await boards.AssertSameBoardAsync(from, to, json?["allowCrossBoard"] is JsonValue ac && ac.TryGetValue<bool>(out var cross) && cross, ct);
 
@@ -108,15 +106,15 @@ public sealed class PromotionService(IApplicationDbContext db, IBoardService boa
             only = only is null ? ok : only.Where(ok.Contains).ToList();
         }
 
-        var count = await db.InTransactionAsync(async () =>
+        var count = await unitOfWork.InTransactionAsync(async () =>
         {
-            var students = await db.Set<Student>().Where(s => s.ClassId == from && s.Status == "active" && (only == null || only.Contains(s.Id))).ToListAsync(ct);
+            var students = await promotion.ActiveStudentsToMoveAsync(from, only, ct);
             foreach (var s in students)
             {
                 if (to is { } target) s.ClassId = target;
                 else s.Status = "inactive";
             }
-            await db.SaveChangesAsync(ct);
+            await unitOfWork.SaveChangesAsync(ct);
             return students.Select(s => s.Id).ToList();
         }, ct);
         await subjectMap.PruneElectivesAsync(count, ct);

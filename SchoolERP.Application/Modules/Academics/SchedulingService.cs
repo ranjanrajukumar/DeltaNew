@@ -1,14 +1,18 @@
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
 
 namespace SchoolERP.Application.Modules.Academics;
 
 /// <summary>Rooms, room bookings, cover for absent teachers and the timetable report (the Node app's academics/scheduling.service.js).</summary>
-public sealed class SchedulingService(IApplicationDbContext db, ICurrentUser user)
+public sealed class SchedulingService(
+    IRoomRepository rooms, ISubstitutionRepository substitutions, ISchedulingQueryRepository schedulingQueries,
+    ITimetableRepository timetable, IClassRepository classes, IUnitOfWork unitOfWork, ICurrentUser user) : ISchedulingService
 {
     private const int Days = 6; // Monday to Saturday
     private const int Periods = 8;
@@ -25,10 +29,10 @@ public sealed class SchedulingService(IApplicationDbContext db, ICurrentUser use
     public async Task<List<JsonObject>> ListRoomsAsync(CancellationToken ct = default)
     {
         var today = Clock.Today();
-        var rooms = await db.Set<Room>().AsNoTracking().OrderBy(r => r.Name).ToListAsync(ct);
-        var slots = await db.Set<TimetableSlot>().Where(s => s.RoomId != null).Select(s => s.RoomId!.Value).ToListAsync(ct);
-        var bookings = await db.Set<RoomBooking>().Where(b => b.Date >= today).Select(b => b.RoomId).ToListAsync(ct);
-        return rooms.Select(r =>
+        var list = await rooms.ListByNameAsync(ct);
+        var slots = await timetable.UsedRoomIdsAsync(ct);
+        var bookings = await rooms.BookedRoomIdsFromAsync(today, ct);
+        return list.Select(r =>
         {
             var o = JsonDefaults.ToJsonObject(r);
             o["periodsPerWeek"] = slots.Count(s => s == r.Id);
@@ -39,24 +43,21 @@ public sealed class SchedulingService(IApplicationDbContext db, ICurrentUser use
 
     public async Task DeleteRoomAsync(int id, CancellationToken ct = default)
     {
-        var room = await db.Set<Room>().FirstOrDefaultAsync(r => r.Id == id, ct) ?? throw HttpException.NotFound("Room not found");
-        if (await db.Set<TimetableSlot>().AnyAsync(s => s.RoomId == id, ct))
+        var room = await rooms.FindAsync(id, ct) ?? throw HttpException.NotFound("Room not found");
+        if (await timetable.UsesRoomAsync(id, ct))
             throw HttpException.Conflict("This room is used in the timetable; clear it from those periods first");
-        if (await db.Set<RoomBooking>().AnyAsync(b => b.RoomId == id, ct)) throw HttpException.Conflict("This room has bookings and cannot be deleted");
-        db.Set<Room>().Remove(room);
-        await db.SaveChangesAsync(ct);
+        if (await rooms.HasBookingsAsync(id, ct)) throw HttpException.Conflict("This room has bookings and cannot be deleted");
+        rooms.Remove(room);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     /// <summary>One room's weekly timetable use plus its bookings from today on.</summary>
     public async Task<object> RoomScheduleAsync(int id, CancellationToken ct = default)
     {
-        var room = await db.Set<Room>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct) ?? throw HttpException.NotFound("Room not found");
+        var room = await rooms.GetAsync(id, ct) ?? throw HttpException.NotFound("Room not found");
         var today = Clock.Today();
-        var slots = await db.Set<TimetableSlot>().AsNoTracking().Include(s => s.SchoolClass).Include(s => s.Subject).Include(s => s.Staff)
-            .Where(s => s.RoomId == id && s.SchoolClass != null && s.Subject != null)
-            .OrderBy(s => s.Day).ThenBy(s => s.Period).ToListAsync(ct);
-        var bookings = await db.Set<RoomBooking>().AsNoTracking().Where(b => b.RoomId == id && b.Date >= today)
-            .OrderBy(b => b.Date).ThenBy(b => b.Period).ToListAsync(ct);
+        var slots = await timetable.OfRoomAsync(id, ct);
+        var bookings = await rooms.BookingsFromAsync(id, today, ct);
         return new
         {
             room,
@@ -72,35 +73,34 @@ public sealed class SchedulingService(IApplicationDbContext db, ICurrentUser use
     {
         var b = new Body(json);
         var roomId = b.Int("roomId");
-        if (roomId is null || !await db.Set<Room>().AnyAsync(r => r.Id == roomId, ct)) throw HttpException.NotFound("Room not found");
+        if (roomId is null || !await rooms.ExistsAsync(roomId.Value, ct)) throw HttpException.NotFound("Room not found");
         if (b.Num("period") is not { } pn || pn != Math.Floor(pn) || pn < 1 || pn > Periods) throw HttpException.BadRequest($"Period must be 1 to {Periods}");
         var p = (int)pn;
         if (b.IsBlankTrimmed("purpose")) throw HttpException.BadRequest("Purpose is required");
         if (!b.Truthy("date") || string.CompareOrdinal(b.Str("date"), Clock.TodayText()) < 0) throw HttpException.BadRequest("Choose today or a later date");
         var date = b.Date("date");
         var day = Weekday(date);
-        var lesson = await db.Set<TimetableSlot>().AsNoTracking().Include(s => s.SchoolClass)
-            .FirstOrDefaultAsync(s => s.RoomId == roomId && s.Day == day && s.Period == p && s.SchoolClass != null, ct);
+        var lesson = await timetable.LessonInRoomAsync(roomId.Value, day, p, ct);
         if (lesson is not null) throw HttpException.Conflict($"The room is used by {ClassNameOf(lesson.SchoolClass)} in that period");
-        if (await db.Set<RoomBooking>().AnyAsync(x => x.RoomId == roomId && x.Date == date && x.Period == p, ct))
+        if (await rooms.IsBookedAsync(roomId.Value, date, p, ct))
             throw HttpException.Conflict("The room is already booked for that period");
         var booking = new RoomBooking { RoomId = roomId.Value, Date = date!.Value, Period = p, Purpose = b.Trimmed("purpose"), BookedByName = user.Name };
-        db.Set<RoomBooking>().Add(booking);
-        await db.SaveChangesAsync(ct);
+        rooms.AddBooking(booking);
+        await unitOfWork.SaveChangesAsync(ct);
         return booking.Id;
     }
 
     public async Task DeleteBookingAsync(int id, CancellationToken ct = default)
     {
-        var booking = await db.Set<RoomBooking>().FirstOrDefaultAsync(x => x.Id == id, ct) ?? throw HttpException.NotFound("Booking not found");
-        db.Set<RoomBooking>().Remove(booking);
-        await db.SaveChangesAsync(ct);
+        var booking = await rooms.FindBookingAsync(id, ct) ?? throw HttpException.NotFound("Booking not found");
+        rooms.RemoveBooking(booking);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     /* ---------- Substitutions ---------- */
 
     private async Task<HashSet<int>> OnLeaveAsync(DateOnly date, CancellationToken ct) =>
-        (await db.Set<LeaveRequest>().Where(l => l.Status == "approved" && l.FromDate <= date && l.ToDate >= date).Select(l => l.StaffId).ToListAsync(ct)).ToHashSet();
+        (await substitutions.OnLeaveStaffIdsAsync(date, ct)).ToHashSet();
 
     /// <summary>Active teachers with no lesson, no cover duty and no approved leave in that period of that date.</summary>
     public async Task<List<(int Id, string Name, string StaffNo)>> FreeTeachersAsync(DateOnly? date, double? period, CancellationToken ct = default)
@@ -108,9 +108,9 @@ public sealed class SchedulingService(IApplicationDbContext db, ICurrentUser use
         var day = Weekday(date);
         if (period is not { } pn || pn != Math.Floor(pn) || pn < 1) throw HttpException.BadRequest("Period is required");
         var p = (int)pn;
-        var staff = await db.Set<Staff>().AsNoTracking().Where(s => s.Status == "active").OrderBy(s => s.FirstName).ToListAsync(ct);
-        var taken = (await db.Set<TimetableSlot>().Where(s => s.Day == day && s.Period == p && s.StaffId != null).Select(s => s.StaffId!.Value).ToListAsync(ct)).ToHashSet();
-        taken.UnionWith(await db.Set<Substitution>().Where(s => s.Date == date && s.TimetableSlot != null && s.TimetableSlot.Period == p).Select(s => s.SubstituteId).ToListAsync(ct));
+        var staff = await substitutions.ActiveStaffByFirstNameAsync(ct);
+        var taken = (await timetable.TeachingStaffIdsAsync(day, p, ct)).ToHashSet();
+        taken.UnionWith(await substitutions.CoveringStaffIdsAsync(date, p, ct));
         taken.UnionWith(await OnLeaveAsync(date!.Value, ct));
         return staff.Where(s => !taken.Contains(s.Id)).Select(s => (s.Id, NameOf(s)!, s.StaffNo)).ToList();
     }
@@ -123,10 +123,8 @@ public sealed class SchedulingService(IApplicationDbContext db, ICurrentUser use
     {
         var day = Weekday(date);
         var away = await OnLeaveAsync(date!.Value, ct);
-        var slots = await db.Set<TimetableSlot>().AsNoTracking().Include(s => s.SchoolClass).Include(s => s.Subject).Include(s => s.Staff)
-            .Where(s => s.Day == day && s.StaffId != null && away.Contains(s.StaffId.Value) && s.SchoolClass != null && s.Subject != null)
-            .OrderBy(s => s.Period).ToListAsync(ct);
-        var subs = await db.Set<Substitution>().AsNoTracking().Include(s => s.Substitute).Where(s => s.Date == date && s.Substitute != null).ToListAsync(ct);
+        var slots = await timetable.OfTeachersOnDayAsync(day, away, ct);
+        var subs = await substitutions.OnDateAsync(date, ct);
         var bySlot = subs.GroupBy(s => s.SlotId).ToDictionary(g => g.Key, g => g.Last());
         return slots.Select(s =>
         {
@@ -147,14 +145,14 @@ public sealed class SchedulingService(IApplicationDbContext db, ICurrentUser use
     {
         var b = new Body(json);
         var slotId = b.Int("slotId");
-        var slot = slotId is null ? null : await db.Set<TimetableSlot>().AsNoTracking().FirstOrDefaultAsync(s => s.Id == slotId, ct);
+        var slot = slotId is null ? null : await timetable.GetAsync(slotId.Value, ct);
         if (slot is null) throw HttpException.NotFound("Timetable period not found");
         if (!b.Truthy("date") || string.CompareOrdinal(b.Str("date"), Clock.TodayText()) < 0) throw HttpException.BadRequest("Choose today or a later date");
         var date = b.Date("date");
         if (Weekday(date) != slot.Day) throw HttpException.BadRequest("That period is not taught on that day of the week");
         var substituteId = b.Num("substituteId");
         if (substituteId == slot.StaffId) throw HttpException.BadRequest("The usual teacher cannot cover their own period");
-        if (await db.Set<Substitution>().AnyAsync(s => s.SlotId == slot.Id && s.Date == date, ct))
+        if (await substitutions.SlotCoveredAsync(slot.Id, date, ct))
             throw HttpException.Conflict("This period already has cover; remove it first");
         var free = await FreeTeachersAsync(date, slot.Period, ct);
         if (!free.Any(t => t.Id == substituteId))
@@ -164,41 +162,33 @@ public sealed class SchedulingService(IApplicationDbContext db, ICurrentUser use
             SlotId = slot.Id, Date = date!.Value, SubstituteId = (int)substituteId!.Value,
             Reason = b.Truthy("reason") ? b.Str("reason") : null, CreatedByName = user.Name,
         };
-        db.Set<Substitution>().Add(row);
-        await db.SaveChangesAsync(ct);
+        substitutions.Add(row);
+        await unitOfWork.SaveChangesAsync(ct);
         return row.Id;
     }
 
     public async Task RemoveSubstitutionAsync(int id, CancellationToken ct = default)
     {
-        var sub = await db.Set<Substitution>().FirstOrDefaultAsync(s => s.Id == id, ct) ?? throw HttpException.NotFound("Substitution not found");
+        var sub = await substitutions.FindAsync(id, ct) ?? throw HttpException.NotFound("Substitution not found");
         if (sub.Date < Clock.Today()) throw HttpException.Conflict("Past cover is a record and cannot be removed");
-        db.Set<Substitution>().Remove(sub);
-        await db.SaveChangesAsync(ct);
+        substitutions.Remove(sub);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     public async Task<List<object>> ListSubstitutionsAsync(DateOnly? from, DateOnly? to, CancellationToken ct = default)
     {
         var start = from ?? Clock.Today().AddDays(-30);
         var today = Clock.Today();
-        var rows = await db.Set<Substitution>().AsNoTracking()
-            .Include(s => s.Substitute)
-            .Include(s => s.TimetableSlot).ThenInclude(t => t!.SchoolClass)
-            .Include(s => s.TimetableSlot).ThenInclude(t => t!.Subject)
-            .Include(s => s.TimetableSlot).ThenInclude(t => t!.Staff)
-            .Where(s => s.Date >= start && (to == null || s.Date <= to) && s.Substitute != null
-                && s.TimetableSlot != null && s.TimetableSlot.SchoolClass != null && s.TimetableSlot.Subject != null)
-            .OrderByDescending(s => s.Date).ThenByDescending(s => s.Id)
-            .ToListAsync(ct);
+        var rows = await schedulingQueries.SubstitutionsAsync(start, to, ct);
         return rows.Select(s => (object)new
         {
             id = s.Id,
             date = s.Date,
-            period = s.TimetableSlot!.Period,
-            className = ClassNameOf(s.TimetableSlot.SchoolClass),
-            subjectName = s.TimetableSlot.Subject?.Name,
-            teacherName = NameOf(s.TimetableSlot.Staff),
-            substituteName = NameOf(s.Substitute),
+            period = s.Period,
+            className = s.ClassName,
+            subjectName = s.SubjectName,
+            teacherName = s.TeacherName,
+            substituteName = s.SubstituteName,
             reason = s.Reason,
             removable = s.Date >= today,
         }).ToList();
@@ -209,12 +199,11 @@ public sealed class SchedulingService(IApplicationDbContext db, ICurrentUser use
     public async Task<object> ReportAsync(CancellationToken ct = default)
     {
         var since = Clock.Today().AddDays(-30);
-        var slots = await db.Set<TimetableSlot>().AsNoTracking().Include(s => s.SchoolClass).Include(s => s.Subject).Include(s => s.Staff)
-            .Where(s => s.SchoolClass != null && s.Subject != null).ToListAsync(ct);
-        var staff = await db.Set<Staff>().AsNoTracking().Where(s => s.Status == "active").ToListAsync(ct);
-        var rooms = await db.Set<Room>().AsNoTracking().OrderBy(r => r.Name).ToListAsync(ct);
-        var classes = await db.Set<SchoolClass>().AsNoTracking().OrderBy(c => c.Name).ThenBy(c => c.Section).ToListAsync(ct);
-        var subs = await db.Set<Substitution>().AsNoTracking().Where(s => s.Date >= since).ToListAsync(ct);
+        var slots = await timetable.WithNamesAsync(ct);
+        var staff = await substitutions.ActiveStaffAsync(ct);
+        var roomList = await rooms.ListByNameAsync(ct);
+        var classList = await classes.ListByNameAsync(ct);
+        var subs = await substitutions.SinceAsync(since, ct);
         const int capacity = Days * Periods;
         var covered = subs.GroupBy(s => s.SubstituteId).ToDictionary(g => g.Key, g => g.Count());
         return new
@@ -223,12 +212,12 @@ public sealed class SchedulingService(IApplicationDbContext db, ICurrentUser use
             teacherLoad = staff
                 .Select(s => new { id = s.Id, name = NameOf(s), periods = slots.Count(x => x.StaffId == s.Id), coverLast30Days = covered.GetValueOrDefault(s.Id) })
                 .OrderByDescending(t => t.periods).ToList(),
-            classes = classes.Select(c => new { id = c.Id, name = ClassNameOf(c), periods = slots.Count(x => x.ClassId == c.Id) }),
+            classes = classList.Select(c => new { id = c.Id, name = ClassNameOf(c), periods = slots.Count(x => x.ClassId == c.Id) }),
             unassigned = slots.Where(s => s.StaffId is null).Select(s => new
             {
                 id = s.Id, className = ClassNameOf(s.SchoolClass), subjectName = s.Subject?.Name, day = s.Day, period = s.Period,
             }),
-            rooms = rooms.Select(r =>
+            rooms = roomList.Select(r =>
             {
                 var used = slots.Count(x => x.RoomId == r.Id);
                 return new { id = r.Id, name = r.Name, kind = r.Kind, periods = used, utilisationPercent = Math.Floor(used * 1000.0 / capacity + 0.5) / 10 };

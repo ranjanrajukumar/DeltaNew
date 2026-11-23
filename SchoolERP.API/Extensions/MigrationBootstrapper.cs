@@ -19,7 +19,7 @@ public static class MigrationBootstrapper
     {
         if (!env.IsDevelopment()) return false;
         using var scope = services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<SchoolErpDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         if (db.Database.GetMigrations().Any()) return false;
 
         var projectDir = Path.GetFullPath(Path.Combine(env.ContentRootPath, "..", "SchoolERP.Infrastructure"));

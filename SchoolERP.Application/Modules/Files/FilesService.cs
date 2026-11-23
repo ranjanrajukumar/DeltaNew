@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
@@ -12,7 +14,9 @@ namespace SchoolERP.Application.Modules.Files;
 /// Student and staff documents (the Node app's files/files.service.js and hr/staffFiles.js). The bytes live in the database row
 /// (base64); rows saved before that move are read from the upload folder. The type is confirmed from the file's own first bytes.
 /// </summary>
-public sealed class FilesService(IApplicationDbContext db, IFileStorage storage, ICurrentUser user)
+public sealed class FilesService(
+    IStudentFileRepository studentFiles, IStaffFileRepository staffFiles, IStaffRepository staffRepo, IUnitOfWork unitOfWork, IFileStorage storage,
+    ICurrentUser user) : IFilesService
 {
     public const int MaxBytes = 5 * 1024 * 1024;
 
@@ -61,12 +65,7 @@ public sealed class FilesService(IApplicationDbContext db, IFileStorage storage,
     {
         if (string.IsNullOrEmpty(studentId)) throw HttpException.BadRequest("studentId is required");
         var id = int.TryParse(studentId, out var n) ? n : -1;
-        return (await db.Set<StudentFile>().AsNoTracking().Where(f => f.StudentId == id && (string.IsNullOrEmpty(kind) || f.Kind == kind))
-            .OrderByDescending(f => f.Id).Select(f => new StudentFile
-            {
-                Id = f.Id, StudentId = f.StudentId, Kind = f.Kind, Title = f.Title, OriginalName = f.OriginalName, MimeType = f.MimeType,
-                Size = f.Size, StoredName = f.StoredName, UploadedByName = f.UploadedByName, CreatedAt = f.CreatedAt,
-            }).ToListAsync(ct)).Select(Shape).ToList();
+        return (await studentFiles.ListWithoutDataAsync(id, kind, ct)).Select(Shape).ToList();
     }
 
     /// <summary>A student has one photo: uploading a new one replaces the old one. Documents accumulate.</summary>
@@ -76,25 +75,25 @@ public sealed class FilesService(IApplicationDbContext db, IFileStorage storage,
         if (kind is null || !Allowed.ContainsKey(kind)) throw HttpException.BadRequest("kind must be photo or document");
         CheckSize(bytes);
         var studentId = int.TryParse(studentIdText, out var n) ? n : -1;
-        if (!await db.Set<Student>().AnyAsync(s => s.Id == studentId, ct)) throw HttpException.NotFound("Student not found");
+        if (!await studentFiles.StudentExistsAsync(studentId, ct)) throw HttpException.NotFound("Student not found");
         var mime = Sniff(bytes!);
         if (mime is null || !Allowed[kind].Contains(mime))
             throw HttpException.BadRequest(kind == "photo" ? "A photo must be a JPEG, PNG or WebP image" : "Only PDF, JPEG, PNG or WebP files are allowed");
         var name = Cut(string.IsNullOrEmpty(originalName) ? "file" : originalName, 255);
         var label = (title ?? "").Trim() is { Length: > 0 } t ? t : kind == "photo" ? "Photo" : name;
 
-        var replaced = kind == "photo" ? await db.Set<StudentFile>().Where(f => f.StudentId == studentId && f.Kind == "photo").ToListAsync(ct) : [];
+        var replaced = kind == "photo" ? await studentFiles.PhotosAsync(studentId, ct) : [];
         var row = new StudentFile
         {
             StudentId = studentId, Kind = kind, Title = Cut(label, 160), OriginalName = name, MimeType = mime, Size = bytes!.Length,
             StoredName = NewStoredName(), Data = Convert.ToBase64String(bytes), UploadedByName = user.Name,
         };
-        db.Set<StudentFile>().Add(row);
-        await db.SaveChangesAsync(ct);
+        studentFiles.Add(row);
+        await unitOfWork.SaveChangesAsync(ct);
         if (replaced.Count > 0)
         {
-            db.Set<StudentFile>().RemoveRange(replaced);
-            await db.SaveChangesAsync(ct);
+            studentFiles.RemoveRange(replaced);
+            await unitOfWork.SaveChangesAsync(ct);
             await storage.RemoveAsync(replaced.Select(r => r.StoredName), ct);
         }
         return Shape(row);
@@ -102,16 +101,16 @@ public sealed class FilesService(IApplicationDbContext db, IFileStorage storage,
 
     public async Task<Download> ReadStudentFileAsync(int id, CancellationToken ct = default)
     {
-        var row = await db.Set<StudentFile>().AsNoTracking().FirstOrDefaultAsync(f => f.Id == id, ct) ?? throw HttpException.NotFound("File not found");
+        var row = await studentFiles.GetAsync(id, ct) ?? throw HttpException.NotFound("File not found");
         var bytes = await BytesAsync(row.Data, row.StoredName, ct) ?? throw HttpException.NotFound("File is missing from storage");
         return new Download(row.MimeType, row.OriginalName, bytes);
     }
 
     public async Task DeleteStudentFileAsync(int id, CancellationToken ct = default)
     {
-        var row = await db.Set<StudentFile>().FirstOrDefaultAsync(f => f.Id == id, ct) ?? throw HttpException.NotFound("File not found");
-        db.Set<StudentFile>().Remove(row);
-        await db.SaveChangesAsync(ct);
+        var row = await studentFiles.FindAsync(id, ct) ?? throw HttpException.NotFound("File not found");
+        studentFiles.Remove(row);
+        await unitOfWork.SaveChangesAsync(ct);
         await storage.RemoveAsync([row.StoredName], ct);
     }
 
@@ -127,12 +126,7 @@ public sealed class FilesService(IApplicationDbContext db, IFileStorage storage,
     {
         if (string.IsNullOrEmpty(staffId)) throw HttpException.BadRequest("staffId is required");
         var id = int.TryParse(staffId, out var n) ? n : -1;
-        return (await db.Set<StaffFile>().AsNoTracking().Where(f => f.StaffId == id).OrderByDescending(f => f.Id)
-            .Select(f => new StaffFile
-            {
-                Id = f.Id, StaffId = f.StaffId, Title = f.Title, OriginalName = f.OriginalName, MimeType = f.MimeType, Size = f.Size,
-                StoredName = f.StoredName, UploadedByName = f.UploadedByName, CreatedAt = f.CreatedAt,
-            }).ToListAsync(ct)).Select(Shape).ToList();
+        return (await staffFiles.ListWithoutDataAsync(id, ct)).Select(Shape).ToList();
     }
 
     /// <summary>Contracts, certificates and ID proofs: the same content checks and storage as student documents.</summary>
@@ -141,7 +135,7 @@ public sealed class FilesService(IApplicationDbContext db, IFileStorage storage,
         if (string.IsNullOrEmpty(staffIdText)) throw HttpException.BadRequest("staffId is required");
         CheckSize(bytes);
         var staffId = int.TryParse(staffIdText, out var n) ? n : -1;
-        if (!await db.Set<Staff>().AnyAsync(s => s.Id == staffId, ct)) throw HttpException.NotFound("Staff member not found");
+        if (!await staffRepo.ExistsAsync(staffId, ct)) throw HttpException.NotFound("Staff member not found");
         var mime = Sniff(bytes!) ?? throw HttpException.BadRequest("Only PDF, JPEG, PNG or WebP files are allowed");
         var name = Cut(string.IsNullOrEmpty(originalName) ? "file" : originalName, 255);
         var row = new StaffFile
@@ -149,23 +143,23 @@ public sealed class FilesService(IApplicationDbContext db, IFileStorage storage,
             StaffId = staffId, Title = Cut((title ?? "").Trim() is { Length: > 0 } t ? t : name, 160), OriginalName = name, MimeType = mime,
             Size = bytes!.Length, StoredName = NewStoredName(), Data = Convert.ToBase64String(bytes), UploadedByName = user.Name,
         };
-        db.Set<StaffFile>().Add(row);
-        await db.SaveChangesAsync(ct);
+        staffFiles.Add(row);
+        await unitOfWork.SaveChangesAsync(ct);
         return Shape(row);
     }
 
     public async Task<Download> ReadStaffFileAsync(int id, CancellationToken ct = default)
     {
-        var row = await db.Set<StaffFile>().AsNoTracking().FirstOrDefaultAsync(f => f.Id == id, ct) ?? throw HttpException.NotFound("File not found");
+        var row = await staffFiles.GetAsync(id, ct) ?? throw HttpException.NotFound("File not found");
         var bytes = await BytesAsync(row.Data, row.StoredName, ct) ?? throw HttpException.NotFound("File is missing from storage");
         return new Download(row.MimeType, row.OriginalName, bytes);
     }
 
     public async Task DeleteStaffFileAsync(int id, CancellationToken ct = default)
     {
-        var row = await db.Set<StaffFile>().FirstOrDefaultAsync(f => f.Id == id, ct) ?? throw HttpException.NotFound("File not found");
-        db.Set<StaffFile>().Remove(row);
-        await db.SaveChangesAsync(ct);
+        var row = await staffFiles.FindAsync(id, ct) ?? throw HttpException.NotFound("File not found");
+        staffFiles.Remove(row);
+        await unitOfWork.SaveChangesAsync(ct);
         await storage.RemoveAsync([row.StoredName], ct);
     }
 }

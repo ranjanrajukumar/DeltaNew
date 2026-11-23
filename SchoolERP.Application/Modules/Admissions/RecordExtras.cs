@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
-using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
 
 namespace SchoolERP.Application.Modules.Admissions;
@@ -9,7 +10,7 @@ namespace SchoolERP.Application.Modules.Admissions;
 /// A record's detailed particulars (the Node app's admissions/recordExtras.js): one JSON object per (entity, id) in record_extras.
 /// Values are plain JSON: text, numbers, true/false, and the qualifications and siblings lists.
 /// </summary>
-public sealed class RecordExtras(IApplicationDbContext db)
+public sealed class RecordExtras(IRecordExtraRepository extras, IUnitOfWork unitOfWork) : IRecordExtras
 {
     private static JsonObject Parse(string? text)
     {
@@ -26,7 +27,7 @@ public sealed class RecordExtras(IApplicationDbContext db)
 
     public async Task<JsonObject> LoadAsync(string entity, int id, CancellationToken ct = default)
     {
-        var row = await db.Set<RecordExtra>().AsNoTracking().FirstOrDefaultAsync(r => r.Entity == entity && r.EntityId == id, ct);
+        var row = await extras.GetForAsync(entity, id, ct);
         return Parse(row?.Data);
     }
 
@@ -34,7 +35,7 @@ public sealed class RecordExtras(IApplicationDbContext db)
     public async Task SaveAsync(string entity, int id, JsonObject values, CancellationToken ct = default)
     {
         if (values.Count == 0) return;
-        var row = await db.Set<RecordExtra>().FirstOrDefaultAsync(r => r.Entity == entity && r.EntityId == id, ct);
+        var row = await extras.FindForAsync(entity, id, ct);
         var next = Parse(row?.Data);
         foreach (var (key, value) in values) next[key] = value?.DeepClone();
         foreach (var key in next.Select(kv => kv.Key).ToList())
@@ -47,7 +48,7 @@ public sealed class RecordExtras(IApplicationDbContext db)
         }
         var data = next.ToJsonString();
         if (row is not null) row.Data = data;
-        else db.Set<RecordExtra>().Add(new RecordExtra { Entity = entity, EntityId = id, Data = data });
-        await db.SaveChangesAsync(ct);
+        else extras.Add(new RecordExtra { Entity = entity, EntityId = id, Data = data });
+        await unitOfWork.SaveChangesAsync(ct);
     }
 }

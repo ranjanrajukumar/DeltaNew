@@ -1,15 +1,16 @@
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Application.Common.Crud;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
-using SchoolERP.Application.Common.Interfaces;
 using SchoolERP.Domain.Entities;
 
 namespace SchoolERP.Application.Modules.HR;
 
 /// <summary>Staff performance reviews (the Node app's hr/reviews.service.js). Admin only; a final review cannot change.</summary>
-public sealed class ReviewsService(IApplicationDbContext db)
+public sealed class ReviewsService(IPerformanceReviewRepository reviews, IStaffRepository staffRepo, IUnitOfWork unitOfWork) : IReviewsService
 {
     private static readonly string[] Ratings = ["work", "punctuality", "teamwork", "initiative"];
     private static readonly string[] Fields = ["staffId", "period", "reviewDate", "reviewer", .. Ratings, "strengths", "improvements"];
@@ -25,8 +26,7 @@ public sealed class ReviewsService(IApplicationDbContext db)
     }
 
     public async Task<List<JsonObject>> ListAsync(int? staffId, CancellationToken ct = default) =>
-        (await db.Set<PerformanceReview>().AsNoTracking().Include(r => r.Staff).Where(r => r.Staff != null && (staffId == null || r.StaffId == staffId))
-            .OrderByDescending(r => r.ReviewDate).ThenByDescending(r => r.Id).ToListAsync(ct))
+        (await reviews.ListWithStaffAsync(staffId, ct))
         .Select(Shape).ToList();
 
     private static void CheckRatings(Body b)
@@ -40,39 +40,39 @@ public sealed class ReviewsService(IApplicationDbContext db)
     {
         CheckRatings(b);
         var staffId = b.Truthy("staffId") ? b.Int("staffId") : null;
-        if (staffId is null || !await db.Set<Staff>().AnyAsync(s => s.Id == staffId, ct)) throw HttpException.BadRequest("Choose a staff member");
+        if (staffId is null || !await staffRepo.ExistsAsync(staffId.Value, ct)) throw HttpException.BadRequest("Choose a staff member");
         if (b.IsBlankTrimmed("period")) throw HttpException.BadRequest("Review period is required");
         if (!b.Truthy("reviewDate")) throw HttpException.BadRequest("Review date is required");
         if (Ratings.Any(k => !b.Has(k))) throw HttpException.BadRequest("Every rating is required");
         var review = new PerformanceReview();
         CrudService.Apply(b, Fields, review);
-        db.Set<PerformanceReview>().Add(review);
-        await db.SaveChangesAsync(ct);
+        reviews.Add(review);
+        await unitOfWork.SaveChangesAsync(ct);
         return review.Id;
     }
 
     public async Task UpdateAsync(int id, Body b, CancellationToken ct = default)
     {
-        var review = await db.Set<PerformanceReview>().FirstOrDefaultAsync(r => r.Id == id, ct) ?? throw HttpException.NotFound("Review not found");
+        var review = await reviews.FindAsync(id, ct) ?? throw HttpException.NotFound("Review not found");
         if (review.Status == "final") throw HttpException.Conflict("A finalised review cannot be changed");
         CheckRatings(b);
         CrudService.Apply(b, Fields.Where(f => f != "staffId").ToArray(), review); // the reviewed person is fixed once the review exists
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     public async Task FinalizeAsync(int id, CancellationToken ct = default)
     {
-        var review = await db.Set<PerformanceReview>().FirstOrDefaultAsync(r => r.Id == id, ct) ?? throw HttpException.NotFound("Review not found");
+        var review = await reviews.FindAsync(id, ct) ?? throw HttpException.NotFound("Review not found");
         if (review.Status == "final") throw HttpException.Conflict("This review is already final");
         review.Status = "final";
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)
     {
-        var review = await db.Set<PerformanceReview>().FirstOrDefaultAsync(r => r.Id == id, ct) ?? throw HttpException.NotFound("Review not found");
+        var review = await reviews.FindAsync(id, ct) ?? throw HttpException.NotFound("Review not found");
         if (review.Status == "final") throw HttpException.Conflict("A finalised review cannot be deleted");
-        db.Set<PerformanceReview>().Remove(review);
-        await db.SaveChangesAsync(ct);
+        reviews.Remove(review);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 }

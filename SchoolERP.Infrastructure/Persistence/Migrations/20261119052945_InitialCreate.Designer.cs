@@ -11,7 +11,7 @@ using SchoolERP.Infrastructure.Persistence;
 
 namespace SchoolERP.Infrastructure.Persistence.Migrations
 {
-    [DbContext(typeof(SchoolErpDbContext))]
+    [DbContext(typeof(ApplicationDbContext))]
     [Migration("20261119052945_InitialCreate")]
     partial class InitialCreate
     {

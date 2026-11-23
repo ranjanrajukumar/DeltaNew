@@ -1,10 +1,12 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Application.Modules.Attendance;
 using SchoolERP.Application.Modules.Leave;
 using SchoolERP.Domain.Entities;
@@ -12,7 +14,17 @@ using SchoolERP.Domain.Entities;
 namespace SchoolERP.Application.Modules.HR;
 
 /// <summary>Staff attendance, staff leave and the HR summary (the Node app's hr/hr.service.js and the staff half of monthly.service.js).</summary>
-public sealed partial class HrService(IApplicationDbContext db, LeaveTypesService leaveTypes, MonthlyRegisterService monthly, IPushService push)
+public sealed partial class HrService(
+    IStaffRepository staffRepo,
+    IDepartmentRepository departments,
+    IDepartmentQueryRepository departmentQueries,
+    IStaffAttendanceRepository attendance,
+    IStaffAttendanceQueryRepository attendanceQueries,
+    ILeaveRequestRepository leaves,
+    IUnitOfWork unitOfWork,
+    ILeaveTypesService leaveTypes,
+    IMonthlyRegisterService monthly,
+    IPushService push) : IHrService
 {
     /// <summary>Who is deciding: { id, name, role, staffId }.</summary>
     public sealed record Decider(int Id, string? Name, string? Role, int? StaffId);
@@ -20,26 +32,21 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
     private static string NameOf(Staff s) => $"{s.FirstName} {s.LastName}";
 
     /// <summary>Departments by name, with the head's name.</summary>
-    public async Task<List<object>> DepartmentsAsync(CancellationToken ct = default)
-    {
-        var departments = await db.Set<Department>().AsNoTracking().OrderBy(d => d.Name).ToListAsync(ct);
-        var names = await db.Set<Staff>().AsNoTracking().ToDictionaryAsync(s => s.Id, NameOf, ct);
-        return departments.Select(d => (object)new
+    public async Task<List<object>> DepartmentsAsync(CancellationToken ct = default) =>
+        (await departmentQueries.ListWithHeadsAsync(ct)).Select(d => (object)new
         {
-            id = d.Id, name = d.Name, headStaffId = d.HeadStaffId, headName = d.HeadStaffId is { } h ? names.GetValueOrDefault(h) : null,
+            id = d.Id, name = d.Name, headStaffId = d.HeadStaffId, headName = d.HeadStaffId is not null ? d.HeadName : null,
         }).ToList();
-    }
 
     /* ---------- Staff attendance ---------- */
 
     /// <summary>Active staff with their mark for the day. Staff on approved leave default to "leave" until saved.</summary>
     public async Task<List<object>> RosterAsync(DateOnly date, CancellationToken ct = default)
     {
-        var staff = await db.Set<Staff>().AsNoTracking().Where(s => s.Status == "active").OrderBy(s => s.FirstName).ToListAsync(ct);
-        var marks = (await db.Set<StaffAttendance>().AsNoTracking().Where(a => a.Date == date).ToListAsync(ct))
+        var staff = await staffRepo.ActiveAsync(null, ct);
+        var marks = (await attendance.ForDateAsync(date, ct))
             .GroupBy(a => a.StaffId).ToDictionary(g => g.Key, g => g.Last().Status);
-        var onLeave = (await db.Set<LeaveRequest>().Where(l => l.Status == "approved" && l.FromDate <= date && l.ToDate >= date)
-            .Select(l => l.StaffId).ToListAsync(ct)).ToHashSet();
+        var onLeave = await leaves.OnApprovedLeaveAsync(date, ct);
         return staff.Select(s => (object)new
         {
             staffId = s.Id,
@@ -55,18 +62,18 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
     {
         if (string.IsNullOrEmpty(dateText)) throw HttpException.BadRequest("date is required");
         var date = Body.AsDate(dateText) ?? throw HttpException.BadRequest("Invalid value in the request");
-        await db.InTransactionAsync(async () =>
+        await unitOfWork.InTransactionAsync(async () =>
         {
             foreach (var (staffId, status) in records)
             {
-                var row = await db.Set<StaffAttendance>().FirstOrDefaultAsync(a => a.StaffId == staffId && a.Date == date, ct);
+                var row = await attendance.FindMarkAsync(staffId, date, ct);
                 if (row is null)
                 {
                     row = new StaffAttendance { StaffId = staffId, Date = date };
-                    db.Set<StaffAttendance>().Add(row);
+                    attendance.Add(row);
                 }
                 row.Status = status!;
-                await db.SaveChangesAsync(ct);
+                await unitOfWork.SaveChangesAsync(ct);
             }
             return true;
         }, ct);
@@ -81,30 +88,25 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
         var m = month is not null && YearMonth().IsMatch(month) ? month : DateTime.UtcNow.ToString("yyyy-MM");
         var from = DateOnly.ParseExact($"{m}-01", "yyyy-MM-dd", CultureInfo.InvariantCulture);
         var to = from.AddMonths(1).AddDays(-1);
-        return (await db.Set<StaffAttendance>().AsNoTracking().Where(a => a.StaffId == staffId && a.Date >= from && a.Date <= to)
-            .OrderByDescending(a => a.Date).ToListAsync(ct))
+        return (await attendance.ForStaffBetweenAsync(staffId, from, to, ct))
             .Select(a => (object)new { id = a.Id, date = a.Date, status = a.Status }).ToList();
     }
 
     public async Task<JsonObject> StaffMonthlyAsync(string? month, string? category, CancellationToken ct = default)
     {
         var range = MonthlyRegisterService.Bounds(month);
-        var staff = await db.Set<Staff>().AsNoTracking()
-            .Where(s => s.Status == "active" && (string.IsNullOrEmpty(category) || s.StaffCategory == category))
-            .OrderBy(s => s.FirstName).ToListAsync(ct);
+        var staff = await staffRepo.ActiveAsync(category, ct);
         var ids = staff.Select(s => s.Id).ToList();
-        var marks = ids.Count == 0 ? [] : await db.Set<StaffAttendance>().AsNoTracking()
-            .Where(a => ids.Contains(a.StaffId) && a.Date >= range.From && a.Date <= range.To)
-            .Select(a => new MonthlyRegisterService.DayMark(a.StaffId, a.Date, a.Status, null, null, null)).ToListAsync(ct);
-        var leaves = ids.Count == 0 ? [] : await db.Set<LeaveRequest>().AsNoTracking()
-            .Where(l => ids.Contains(l.StaffId) && l.Status == "approved" && l.FromDate <= range.To && l.ToDate >= range.From)
-            .Select(l => new MonthlyRegisterService.LeaveDay(l.StaffId, l.LeaveTypeId, l.FromDate, l.ToDate, l.DayPart)).ToListAsync(ct);
+        var marks = ids.Count == 0 ? [] : (await attendance.ForStaffBetweenAsync(ids, range.From, range.To, ct))
+            .Select(a => new MonthlyRegisterService.DayMark(a.StaffId, a.Date, a.Status, null, null, null)).ToList();
+        var leaveDays = ids.Count == 0 ? [] : (await leaves.ApprovedOverlappingAsync(ids, range.From, range.To, ct))
+            .Select(l => new MonthlyRegisterService.LeaveDay(l.StaffId, l.LeaveTypeId, l.FromDate, l.ToDate, l.DayPart)).ToList();
         var register = MonthlyRegisterService.Register(
             staff.Select(s => new JsonObject
             {
                 ["id"] = s.Id, ["no"] = s.StaffNo, ["name"] = NameOf(s), ["designation"] = s.Designation, ["category"] = s.StaffCategory,
             }),
-            marks, MonthlyRegisterService.LeaveDays(leaves, range, await monthly.TypeNamesAsync(ct)), range);
+            marks, MonthlyRegisterService.LeaveDays(leaveDays, range, await monthly.TypeNamesAsync(ct)), range);
         register["offs"] = await monthly.OffDaysAsync(range, "staff", ct);
         return register;
     }
@@ -127,7 +129,7 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
     /// <summary>Allowance, used and remaining for each staff leave type in a year.</summary>
     public async Task<List<object>> LeaveBalanceAsync(int staffId, int? year = null, CancellationToken ct = default)
     {
-        if (!await db.Set<Staff>().AnyAsync(s => s.Id == staffId, ct)) throw HttpException.NotFound("Staff not found");
+        if (!await staffRepo.ExistsAsync(staffId, ct)) throw HttpException.NotFound("Staff not found");
         var y = year ?? DateTime.Now.Year;
         var output = new List<object>();
         foreach (var type in await leaveTypes.ListAsync("staff", false, ct))
@@ -147,11 +149,7 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
     /// <summary>Leave requests. A department head (a non-admin) sees only the requests they can decide.</summary>
     public async Task<List<JsonObject>> ListLeavesAsync(string? status, int? staffId, Decider? viewer, CancellationToken ct = default)
     {
-        var rows = await db.Set<LeaveRequest>().AsNoTracking()
-            .Include(l => l.Staff).ThenInclude(s => s!.Department)
-            .Include(l => l.LeaveType)
-            .Where(l => l.Staff != null && (string.IsNullOrEmpty(status) || l.Status == status) && (staffId == null || l.StaffId == staffId))
-            .OrderByDescending(l => l.Id).ToListAsync(ct);
+        var rows = await leaves.ListWithStaffAsync(status, staffId, ct);
         return rows
             .Select(l => (Leave: l, Can: MayDecide(viewer, l, l.Staff, l.LeaveType)))
             .Where(x => viewer is null || viewer.Role == "admin" || x.Can)
@@ -182,12 +180,11 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
         if (fromText!.Length < 4 || toText!.Length < 4 || fromText[..4] != toText[..4])
             throw HttpException.BadRequest("Split leave that crosses a year into two applications");
         var staffId = b.Int("staffId");
-        if (staffId is null || !await db.Set<Staff>().AnyAsync(s => s.Id == staffId, ct)) throw HttpException.NotFound("Staff not found");
+        if (staffId is null || !await staffRepo.ExistsAsync(staffId.Value, ct)) throw HttpException.NotFound("Staff not found");
 
         var span = LeaveTypesService.LeaveSpan(b.Str("dayPart"), b.Str("fromTime"), b.Str("toTime"), fromText, toText);
         // overlapping an existing live request is almost always a mistake
-        var clash = await db.Set<LeaveRequest>().AsNoTracking().FirstOrDefaultAsync(l =>
-            l.StaffId == staffId && (l.Status == "pending" || l.Status == "approved") && l.FromDate <= span.ToDate && l.ToDate >= span.FromDate, ct);
+        var clash = await leaves.FindClashAsync(staffId.Value, span.FromDate, span.ToDate, ct);
         if (clash is not null)
             throw HttpException.Conflict($"Overlaps an existing {clash.Status} leave ({clash.FromDate:yyyy-MM-dd} to {clash.ToDate:yyyy-MM-dd})");
 
@@ -197,7 +194,7 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
             try { await leaveTypes.CheckLimitAsync("staff", staffId.Value, type, span.FromDate.Year, span.Days, ct: ct); }
             catch (HttpException) { auto = false; } // over the limit: let an admin decide
         }
-        var person = await db.Set<Staff>().AsNoTracking().Include(s => s.Department).FirstAsync(s => s.Id == staffId, ct);
+        var person = await staffRepo.GetWithDepartmentAsync(staffId.Value, ct) ?? throw new InvalidOperationException("Sequence contains no elements.");
         var row = new LeaveRequest
         {
             StaffId = staffId.Value, Type = type.Name, LeaveTypeId = type.Id, FromDate = span.FromDate, ToDate = span.ToDate, Days = span.Days,
@@ -208,11 +205,11 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
             row.Status = "approved";
             row.Remarks = "Auto-approved";
         }
-        db.Set<LeaveRequest>().Add(row);
-        await db.SaveChangesAsync(ct);
+        leaves.Add(row);
+        await unitOfWork.SaveChangesAsync(ct);
         if (row.Status == "pending" && type.Approver == "department_head" && person.Department?.HeadStaffId is { } head && head != staffId)
         {
-            var headUser = await db.Set<User>().Where(u => u.StaffId == head).Select(u => (int?)u.Id).FirstOrDefaultAsync(ct);
+            var headUser = await staffRepo.LoginUserIdAsync(head, ct);
             if (headUser is not null)
                 await push.NotifyUsersAsync([headUser], "Leave request waiting", $"{NameOf(person)}: {fromText} to {toText}. {type.Name}", "/leave-applications", ct);
         }
@@ -220,12 +217,12 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
     }
 
     /// <summary>Approving checks the balance for the year first, so the limit can never be exceeded.</summary>
-    public Task DecideLeaveAsync(int id, string decision, string? remarks, Decider decider, CancellationToken ct = default) => db.InTransactionAsync(async () =>
+    public Task DecideLeaveAsync(int id, string decision, string? remarks, Decider decider, CancellationToken ct = default) => unitOfWork.InTransactionAsync(async () =>
     {
-        var leave = await db.Set<LeaveRequest>().FirstOrDefaultAsync(l => l.Id == id, ct) ?? throw HttpException.NotFound("Leave request not found");
+        var leave = await leaves.FindAsync(id, ct) ?? throw HttpException.NotFound("Leave request not found");
         if (leave.Status != "pending") throw HttpException.Conflict($"This request is already {leave.Status}");
-        var type = leave.LeaveTypeId is { } t ? await db.Set<LeaveType>().AsNoTracking().FirstOrDefaultAsync(x => x.Id == t, ct) : null;
-        var requester = await db.Set<Staff>().AsNoTracking().Include(s => s.Department).FirstOrDefaultAsync(s => s.Id == leave.StaffId, ct);
+        var type = leave.LeaveTypeId is { } t ? await leaves.LeaveTypeAsync(t, ct) : null;
+        var requester = await staffRepo.GetWithDepartmentAsync(leave.StaffId, ct);
         if (!MayDecide(decider, leave, requester, type))
             throw HttpException.Forbidden(type?.Approver == "department_head"
                 ? "Only an admin or the head of this staff member's department can decide this leave"
@@ -238,18 +235,18 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
         leave.Status = decision;
         leave.Remarks = string.IsNullOrEmpty(remarks) ? null : remarks;
         leave.DecidedBy = decider.Id;
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
         return true;
     }, ct);
 
     /// <summary>A pending request can be withdrawn, and an approved one cancelled while it has not started.</summary>
     public async Task CancelLeaveAsync(int id, CancellationToken ct = default)
     {
-        var leave = await db.Set<LeaveRequest>().FirstOrDefaultAsync(l => l.Id == id, ct) ?? throw HttpException.NotFound("Leave request not found");
+        var leave = await leaves.FindAsync(id, ct) ?? throw HttpException.NotFound("Leave request not found");
         if (leave.Status == "approved" && leave.FromDate <= Clock.Today()) throw HttpException.Conflict("Leave that has already started cannot be cancelled");
         if (leave.Status is not ("pending" or "approved")) throw HttpException.Conflict($"A {leave.Status} request cannot be cancelled");
         leave.Status = "cancelled";
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     /* ---------- Reports ---------- */
@@ -260,10 +257,9 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
         var from = DateOnly.ParseExact($"{month}-01", "yyyy-MM-dd", CultureInfo.InvariantCulture);
         var to = from.AddMonths(1).AddDays(-1);
         var year = from.Year;
-        var staff = await db.Set<Staff>().AsNoTracking().Include(s => s.Department).Where(s => s.Status == "active").OrderBy(s => s.FirstName).ToListAsync(ct);
-        var departments = await db.Set<Department>().AsNoTracking().ToListAsync(ct);
-        var counts = (await db.Set<StaffAttendance>().AsNoTracking().Where(a => a.Date >= from && a.Date <= to)
-            .GroupBy(a => new { a.StaffId, a.Status }).Select(g => new { g.Key.StaffId, g.Key.Status, Count = g.Count() }).ToListAsync(ct))
+        var staff = await staffRepo.ActiveWithDepartmentAsync(ct);
+        var departmentList = await departments.AllAsync(ct);
+        var counts = (await attendanceQueries.StatusCountsAsync(from, to, ct))
             .GroupBy(x => x.StaffId).ToDictionary(g => g.Key, g => g.ToDictionary(x => x.Status, x => x.Count));
 
         var perStaff = new List<object>();
@@ -290,7 +286,7 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
                 leaveTakenThisYear = taken,
             });
         }
-        var byDepartment = departments.Select(d => new { department = d.Name, headcount = staff.Count(s => s.DepartmentId == d.Id) }).ToList();
+        var byDepartment = departmentList.Select(d => new { department = d.Name, headcount = staff.Count(s => s.DepartmentId == d.Id) }).ToList();
         var unassigned = staff.Count(s => s.DepartmentId is null);
         if (unassigned > 0) byDepartment.Add(new { department = "Unassigned", headcount = unassigned });
         return new
@@ -298,7 +294,7 @@ public sealed partial class HrService(IApplicationDbContext db, LeaveTypesServic
             month,
             headcount = staff.Count,
             byDepartment,
-            pendingLeaves = await db.Set<LeaveRequest>().CountAsync(l => l.Status == "pending", ct),
+            pendingLeaves = await leaves.PendingCountAsync(ct),
             staff = perStaff,
         };
     }

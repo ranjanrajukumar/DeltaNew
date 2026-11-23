@@ -1,8 +1,10 @@
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Application.Modules.Leave;
 using SchoolERP.Application.Modules.Settings;
 using SchoolERP.Domain.Entities;
@@ -11,7 +13,8 @@ namespace SchoolERP.Application.Modules.Attendance;
 
 /// <summary>Student leave: applying, deciding and cancelling (the Node app's attendance/studentLeave.service.js).</summary>
 public sealed class StudentLeaveService(
-    IApplicationDbContext db, LeaveTypesService leaveTypes, SettingsReader settings, IPushService push)
+    IStudentLeaveRepository studentLeaves, ILeaveTypeRepository leaveTypeRows, IUnitOfWork unitOfWork,
+    ILeaveTypesService leaveTypes, ISettingsReader settings, IPushService push) : IStudentLeaveService
 {
     /// <summary>Who is deciding: { id, name, role, staffId }.</summary>
     public sealed record Decider(int Id, string? Name, string? Role, int? StaffId);
@@ -57,9 +60,8 @@ public sealed class StudentLeaveService(
     /// <summary>The student's own login and their parents' logins: everyone who should hear about a decision.</summary>
     public async Task<List<int?>> FamilyUserIdsAsync(int studentId, CancellationToken ct = default)
     {
-        var account = await db.Set<StudentAccount>().Where(a => a.StudentId == studentId).Select(a => (int?)a.UserId).FirstOrDefaultAsync(ct);
-        var parents = await db.Set<ParentStudent>().Where(l => l.StudentId == studentId && l.Parent != null)
-            .Select(l => (int?)l.Parent!.UserId).ToListAsync(ct);
+        var account = await studentLeaves.StudentUserIdAsync(studentId, ct);
+        var parents = await studentLeaves.ParentUserIdsAsync(studentId, ct);
         return new List<int?> { account }.Concat(parents).Where(id => id is not null and not 0).ToList();
     }
 
@@ -67,27 +69,18 @@ public sealed class StudentLeaveService(
     private async Task NotifyDecidersAsync(Student student, StudentLeave leave, CancellationToken ct)
     {
         int? teacher = student.SchoolClass?.ClassTeacherId is { } tid
-            ? await db.Set<User>().Where(u => u.StaffId == tid).Select(u => (int?)u.Id).FirstOrDefaultAsync(ct)
+            ? await studentLeaves.UserIdOfStaffAsync(tid, ct)
             : null;
         var ids = teacher is not null
             ? [teacher]
-            : await db.Set<User>().Where(u => u.Role == "admin").Select(u => (int?)u.Id).ToListAsync(ct);
+            : await studentLeaves.AdminUserIdsAsync(ct);
         await push.NotifyUsersAsync(ids, "Leave request waiting",
             $"{student.FirstName} {student.LastName}: {leave.FromDate:yyyy-MM-dd} to {leave.ToDate:yyyy-MM-dd}. {leave.Reason}", "/student-leaves", ct);
     }
 
     public async Task<List<JsonObject>> ListAsync(string? status, int? studentId, int? classId, Decider? viewer, CancellationToken ct = default)
     {
-        var rows = await db.Set<StudentLeave>().AsNoTracking()
-            .Include(l => l.Student).ThenInclude(s => s!.SchoolClass)
-            .Include(l => l.LeaveType)
-            .Where(l => l.Student != null
-                && (string.IsNullOrEmpty(status) || l.Status == status)
-                && (studentId == null || l.StudentId == studentId)
-                && (classId == null || l.Student.ClassId == classId))
-            .OrderByDescending(l => l.Id)
-            .Take(300)
-            .ToListAsync(ct);
+        var rows = await studentLeaves.ListWithDetailsAsync(status, studentId, classId, ct);
         return rows.Select(l =>
         {
             var o = Shape(l);
@@ -115,12 +108,11 @@ public sealed class StudentLeaveService(
 
         var studentId = body.Int("studentId");
         var student = studentId is null ? null
-            : await db.Set<Student>().AsNoTracking().Include(s => s.SchoolClass).FirstOrDefaultAsync(s => s.Id == studentId, ct);
+            : await studentLeaves.StudentWithClassAsync(studentId.Value, ct);
         if (student is null) throw HttpException.NotFound("Student not found");
         if (student.Status != "active") throw HttpException.Conflict("Only active students can apply for leave");
 
-        var clash = await db.Set<StudentLeave>().AsNoTracking().FirstOrDefaultAsync(l =>
-            l.StudentId == student.Id && (l.Status == "pending" || l.Status == "approved") && l.FromDate <= span.ToDate && l.ToDate >= span.FromDate, ct);
+        var clash = await studentLeaves.ClashAsync(student.Id, span.FromDate, span.ToDate, ct);
         if (clash is not null)
             throw HttpException.Conflict($"Overlaps an existing {clash.Status} leave ({clash.FromDate:yyyy-MM-dd} to {clash.ToDate:yyyy-MM-dd})");
 
@@ -148,8 +140,8 @@ public sealed class StudentLeaveService(
             leave.DecidedByName = "Auto-approved";
             leave.DecidedOn = DateTime.UtcNow;
         }
-        db.Set<StudentLeave>().Add(leave);
-        await db.SaveChangesAsync(ct);
+        studentLeaves.Add(leave);
+        await unitOfWork.SaveChangesAsync(ct);
         if (!auto) await NotifyDecidersAsync(student, leave, ct);
         return leave.Id;
     }
@@ -157,12 +149,12 @@ public sealed class StudentLeaveService(
     /// <summary>Approve or reject a pending request; the family is told the outcome.</summary>
     public async Task DecideAsync(int id, string decision, string? remarks, Decider decider, CancellationToken ct = default)
     {
-        var leave = await db.InTransactionAsync(async () =>
+        var leave = await unitOfWork.InTransactionAsync(async () =>
         {
-            var row = await db.Set<StudentLeave>().FirstOrDefaultAsync(l => l.Id == id, ct) ?? throw HttpException.NotFound("Leave request not found");
+            var row = await studentLeaves.FindAsync(id, ct) ?? throw HttpException.NotFound("Leave request not found");
             if (row.Status != "pending") throw HttpException.Conflict($"This request is already {row.Status}");
-            var student = await db.Set<Student>().AsNoTracking().Include(s => s.SchoolClass).FirstOrDefaultAsync(s => s.Id == row.StudentId, ct);
-            var type = row.LeaveTypeId is { } t ? await db.Set<LeaveType>().AsNoTracking().FirstOrDefaultAsync(x => x.Id == t, ct) : null;
+            var student = await studentLeaves.StudentWithClassAsync(row.StudentId, ct);
+            var type = row.LeaveTypeId is { } t ? await leaveTypeRows.GetAsync(t, ct) : null;
             if (!MayDecide(decider, student, type))
                 throw HttpException.Forbidden(type?.Approver == "admin"
                     ? "Only an admin can approve or reject this type of leave"
@@ -173,10 +165,10 @@ public sealed class StudentLeaveService(
             row.DecidedBy = decider.Id;
             row.DecidedByName = decider.Name;
             row.DecidedOn = DateTime.UtcNow;
-            await db.SaveChangesAsync(ct);
+            await unitOfWork.SaveChangesAsync(ct);
             return row;
         }, ct);
-        var student = await db.Set<Student>().AsNoTracking().FirstAsync(s => s.Id == leave.StudentId, ct);
+        var student = await studentLeaves.StudentAsync(leave.StudentId, ct);
         var family = await FamilyUserIdsAsync(leave.StudentId, ct);
         family.Add(leave.RequestedBy);
         var outcome = decision == "approved" ? "approved" : "rejected";
@@ -188,11 +180,11 @@ public sealed class StudentLeaveService(
     /// <summary>A request can be withdrawn while pending, or an approved one before it starts. <paramref name="studentId"/> limits a parent to their own child.</summary>
     public async Task CancelAsync(int id, int? studentId = null, CancellationToken ct = default)
     {
-        var leave = await db.Set<StudentLeave>().FirstOrDefaultAsync(l => l.Id == id, ct);
+        var leave = await studentLeaves.FindAsync(id, ct);
         if (leave is null || (studentId is not null && leave.StudentId != studentId)) throw HttpException.NotFound("Leave request not found");
         if (leave.Status == "approved" && leave.FromDate <= Clock.Today()) throw HttpException.Conflict("Leave that has already started cannot be cancelled");
         if (leave.Status is not ("pending" or "approved")) throw HttpException.Conflict($"A {leave.Status} request cannot be cancelled");
         leave.Status = "cancelled";
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 }

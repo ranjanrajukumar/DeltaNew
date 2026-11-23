@@ -2,15 +2,14 @@ using System.Globalization;
 using System.Reflection;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Application.Modules.Academics;
 using SchoolERP.Application.Modules.Admissions;
 using SchoolERP.Application.Modules.Boards;
-using SchoolERP.Application.Modules.Fees;
-using SchoolERP.Application.Modules.Settings;
 using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
 
@@ -18,13 +17,17 @@ namespace SchoolERP.Application.Modules.Students;
 
 /// <summary>Students (the Node app's academics/students.routes.js, students.service.js and students.validation.js).</summary>
 public sealed partial class StudentsService(
-    IApplicationDbContext db,
-    SettingsReader settings,
-    RecordExtras extras,
+    IStudentRepository students,
+    IStudentQueryRepository studentQueries,
+    IUserRepository users,
+    IFeeRepository fees,
+    IUnitOfWork unitOfWork,
+    ISettingsReader settings,
+    IRecordExtras extras,
     IBoardService boards,
-    FeeBilling feeBilling,
+    IFeeBilling feeBilling,
     ISubjectMapService subjectMap,
-    IFileStorage files)
+    IFileStorage files) : IStudentsService
 {
     private const int MaxPageSize = 100;
     private static readonly string[] Genders = ["male", "female", "other"];
@@ -68,7 +71,7 @@ public sealed partial class StudentsService(
         if (!body.IsBlank("classId"))
         {
             var classId = body.Int("classId");
-            if (classId is null || !await db.Set<SchoolClass>().AnyAsync(c => c.Id == classId, ct)) errors.Add("Class does not exist");
+            if (classId is null || !await students.ClassExistsAsync(classId.Value, ct)) errors.Add("Class does not exist");
         }
 
         // registration details: lengths first (a clear message rather than a database error), then formats
@@ -116,14 +119,6 @@ public sealed partial class StudentsService(
         return json;
     }
 
-    private IQueryable<Student> WithClass() =>
-        db.Set<Student>().AsNoTracking().Include(s => s.SchoolClass).ThenInclude(c => c!.ClassTeacher);
-
-    private async Task<HashSet<int>> PhotoIdsAsync(IReadOnlyCollection<int> ids, CancellationToken ct) =>
-        ids.Count == 0
-            ? []
-            : (await db.Set<Photo>().Where(p => p.Entity == "student" && ids.Contains(p.EntityId)).Select(p => p.EntityId).ToListAsync(ct)).ToHashSet();
-
     // ---------- reads ----------
 
     /// <summary>
@@ -132,42 +127,31 @@ public sealed partial class StudentsService(
     /// </summary>
     public async Task<object> ListAsync(ListQuery query, CancellationToken ct = default)
     {
-        var students = WithClass();
-        if (!string.IsNullOrEmpty(query.Grade)) students = students.Where(s => s.SchoolClass != null && s.SchoolClass.Name == query.Grade);
-        if (!string.IsNullOrEmpty(query.Section)) students = students.Where(s => s.SchoolClass != null && s.SchoolClass.Section == query.Section);
-        if (!string.IsNullOrEmpty(query.RegistrationStatus)) students = students.Where(s => s.RegistrationStatus == query.RegistrationStatus);
-        if (!string.IsNullOrEmpty(query.ClassId))
-        {
-            var classId = int.TryParse(query.ClassId, out var c) ? c : -1;
-            students = students.Where(s => s.ClassId == classId);
-        }
-        if (!string.IsNullOrEmpty(query.Status)) students = students.Where(s => s.Status == query.Status);
+        int? classId = null;
+        if (!string.IsNullOrEmpty(query.ClassId)) classId = int.TryParse(query.ClassId, out var c) ? c : -1;
+        string? like = null;
+        int? byId = null;
         if (!string.IsNullOrEmpty(query.Q))
         {
-            var like = $"%{query.Q}%";
-            var q = query.Q.Trim();
-            var idMatch = DisplayId().Match(q);
-            var byId = idMatch.Success ? int.Parse(idMatch.Groups[1].Value, CultureInfo.InvariantCulture) : (int?)null;
-            students = students.Where(s =>
-                EF.Functions.Like(s.AdmissionNo, like) || EF.Functions.Like(s.FirstName, like) || EF.Functions.Like(s.LastName, like)
-                || EF.Functions.Like(s.GuardianPhone!, like) || EF.Functions.Like(s.FatherPhone!, like) || EF.Functions.Like(s.MotherPhone!, like)
-                || EF.Functions.Like(s.RollNo!, like) || EF.Functions.Like(s.GuardianName!, like) || EF.Functions.Like(s.FatherName!, like)
-                || EF.Functions.Like(s.MotherName!, like) || (byId != null && s.Id == byId));
+            like = $"%{query.Q}%";
+            var idMatch = DisplayId().Match(query.Q.Trim());
+            byId = idMatch.Success ? int.Parse(idMatch.Groups[1].Value, CultureInfo.InvariantCulture) : null;
         }
-        students = students.OrderByDescending(s => s.Id);
+        var filter = new IStudentRepository.ListFilter(
+            NullIfEmpty(query.Grade), NullIfEmpty(query.Section), NullIfEmpty(query.RegistrationStatus), classId, NullIfEmpty(query.Status), like, byId);
 
         if (string.IsNullOrEmpty(query.Page))
         {
-            var all = await students.ToListAsync(ct);
-            var withPhoto = await PhotoIdsAsync(all.Select(s => s.Id).ToList(), ct);
+            var all = await students.ListWithClassAsync(filter, ct);
+            var withPhoto = await students.WithPhotoAsync(all.Select(s => s.Id).ToList(), ct);
             return all.Select(s => WithPhotoFlag(Shape(s), withPhoto.Contains(s.Id))).ToList();
         }
 
         var size = Math.Clamp(int.TryParse(query.PageSize, out var ps) && ps != 0 ? ps : 10, 1, MaxPageSize);
         var current = Math.Max(int.TryParse(query.Page, out var pg) && pg != 0 ? pg : 1, 1);
-        var total = await students.CountAsync(ct);
-        var rows = await students.Skip((current - 1) * size).Take(size).ToListAsync(ct);
-        var photos = await PhotoIdsAsync(rows.Select(s => s.Id).ToList(), ct);
+        var total = await students.CountAsync(filter, ct);
+        var rows = await students.PageWithClassAsync(filter, (current - 1) * size, size, ct);
+        var photos = await students.WithPhotoAsync(rows.Select(s => s.Id).ToList(), ct);
         return new
         {
             rows = rows.Select(s => WithPhotoFlag(Shape(s), photos.Contains(s.Id))).ToList(),
@@ -177,6 +161,8 @@ public sealed partial class StudentsService(
         };
     }
 
+    private static string? NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? null : value;
+
     private static JsonObject WithPhotoFlag(JsonObject json, bool hasPhoto)
     {
         json["hasPhoto"] = hasPhoto;
@@ -185,7 +171,7 @@ public sealed partial class StudentsService(
 
     public async Task<JsonObject?> GetAsync(int id, CancellationToken ct = default)
     {
-        var student = await WithClass().FirstOrDefaultAsync(s => s.Id == id, ct);
+        var student = await students.GetWithClassAsync(id, ct);
         if (student is null) return null;
         var json = Shape(student);
         foreach (var (key, value) in await extras.LoadAsync("student", student.Id, ct)) json[key] = value?.DeepClone();
@@ -249,8 +235,8 @@ public sealed partial class StudentsService(
         var formula = await settings.GetStringAsync("numbering.admission", ct);
         return await Numbering.NextAsync(
             formula,
-            async () => await db.Set<Student>().MaxAsync(s => (int?)s.Id, ct),
-            async candidate => await db.Set<Student>().AnyAsync(s => s.AdmissionNo == candidate, ct));
+            async () => await students.MaxIdAsync(ct),
+            async candidate => await students.AdmissionNoExistsAsync(candidate, ct));
     }
 
     /// <summary>A student with the same name and date of birth is almost always a double entry.</summary>
@@ -260,7 +246,7 @@ public sealed partial class StudentsService(
         if (dob is null || body.IsBlank("firstName") || body.IsBlank("lastName")) return null;
         var first = body.Trimmed("firstName");
         var last = body.Trimmed("lastName");
-        return await db.Set<Student>().AsNoTracking().FirstOrDefaultAsync(s => s.FirstName == first && s.LastName == last && s.Dob == dob, ct);
+        return await students.FindByNameAndDobAsync(first, last, dob.Value, ct);
     }
 
     /// <summary>
@@ -273,19 +259,19 @@ public sealed partial class StudentsService(
             throw HttpException.Conflict(
                 $"A student with the same name and date of birth already exists ({twin.AdmissionNo}). Save again to register them anyway.");
 
-        return await db.InTransactionAsync<object>(async () =>
+        return await unitOfWork.InTransactionAsync<object>(async () =>
         {
             var extraValues = ExtrasOf(body);
             var student = new Student();
             Apply(body, student);
             if (string.IsNullOrEmpty(student.AdmissionNo)) student.AdmissionNo = await NextAdmissionNoAsync(ct);
-            db.Set<Student>().Add(student);
-            await db.SaveChangesAsync(ct);
+            students.Add(student);
+            await unitOfWork.SaveChangesAsync(ct);
             await extras.SaveAsync("student", student.Id, extraValues, ct);
             var feesBilled = 0;
             if (billFees && student.ClassId is { } classId)
             {
-                var items = await db.Set<FeeStructure>().AsNoTracking().Where(f => f.ClassId == classId).ToListAsync(ct);
+                var items = await fees.StructureOfClassAsync(classId, ct);
                 foreach (var item in items) await feeBilling.BillStudentsAsync([student.Id], item.Title, item.Amount, item.DueDate, ct);
                 feesBilled = items.Count;
             }
@@ -296,14 +282,14 @@ public sealed partial class StudentsService(
     /// <summary>Returns false when the student does not exist.</summary>
     public async Task<bool> UpdateAsync(int id, Body body, CancellationToken ct = default)
     {
-        var student = await db.Set<Student>().FirstOrDefaultAsync(s => s.Id == id, ct);
+        var student = await students.FindAsync(id, ct);
         if (student is null) return false;
         var before = student.ClassId;
         var extraValues = ExtrasOf(body);
         if (body.Has("classId") && !body.IsBlank("classId") && body.Int("classId") is { } next && before is not null && next != before)
             await boards.AssertSameBoardAsync(before, next, body.Raw("allowCrossBoard") is JsonValue v && v.TryGetValue<bool>(out var b) && b, ct);
         Apply(body, student);
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
         await extras.SaveAsync("student", student.Id, extraValues, ct);
         if (student.ClassId != before) await subjectMap.PruneElectivesAsync([student.Id], ct);
         return true;
@@ -312,30 +298,30 @@ public sealed partial class StudentsService(
     /// <summary>Soft-deletes a student with their records, files, login and photos. Returns false when the student does not exist.</summary>
     public async Task<bool> DeleteAsync(int id, CancellationToken ct = default)
     {
-        if (await db.Set<DocumentRequest>().AnyAsync(d => d.StudentId == id, ct))
+        if (await students.HasDocumentRequestsAsync(id, ct))
             throw HttpException.Conflict("This student has certificate requests on record. Mark the student inactive instead of deleting.");
-        var stored = await db.Set<StudentFile>().Where(f => f.StudentId == id).Select(f => f.StoredName).ToListAsync(ct);
-        var login = await db.Set<StudentAccount>().AsNoTracking().FirstOrDefaultAsync(a => a.StudentId == id, ct);
-        var student = await db.Set<Student>().FirstOrDefaultAsync(s => s.Id == id, ct);
+        var stored = await students.StoredFileNamesAsync(id, ct);
+        var login = await students.LoginOfAsync(id, ct);
+        var student = await students.FindAsync(id, ct);
         if (student is not null)
         {
-            db.Set<Student>().Remove(student);
-            await db.SaveChangesAsync(ct);
+            students.Remove(student);
+            await unitOfWork.SaveChangesAsync(ct);
             await files.RemoveAsync(stored, ct);
             // an applicant who was enrolled as this student goes back to holding an offer, so nothing points at a student that is gone
-            var enrolled = await db.Set<Admission>().Where(a => a.StudentId == id && a.Status == "enrolled").ToListAsync(ct);
+            var enrolled = await students.EnrolledAdmissionsAsync(id, ct);
             foreach (var a in enrolled) (a.Status, a.StudentId, a.EnrolledOn) = ("approved", null, null);
-            await db.SaveChangesAsync(ct);
+            await unitOfWork.SaveChangesAsync(ct);
         }
-        if (login is not null && await db.Set<User>().FirstOrDefaultAsync(u => u.Id == login.UserId, ct) is { } user)
+        if (login is not null && await users.FindAsync(login.UserId, ct) is { } user)
         {
-            db.Set<User>().Remove(user);
-            await db.SaveChangesAsync(ct);
+            users.Remove(user);
+            await unitOfWork.SaveChangesAsync(ct);
         }
         if (student is null) return false;
-        var photos = await db.Set<Photo>().Where(p => PhotoEntities.Contains(p.Entity) && p.EntityId == id).ToListAsync(ct);
-        db.Set<Photo>().RemoveRange(photos);
-        await db.SaveChangesAsync(ct);
+        var photos = await students.PhotosAsync(id, PhotoEntities, ct);
+        students.RemovePhotos(photos);
+        await unitOfWork.SaveChangesAsync(ct);
         return true;
     }
 
@@ -344,8 +330,7 @@ public sealed partial class StudentsService(
     /// <summary>Tiles for the Registrations page: how many registrations are complete and how many still need review.</summary>
     public async Task<object> RegistrationSummaryAsync(CancellationToken ct = default)
     {
-        var total = await db.Set<Student>().CountAsync(ct);
-        var complete = await db.Set<Student>().CountAsync(s => s.RegistrationStatus == "complete", ct);
+        var (total, complete) = await studentQueries.RegistrationSummaryAsync(ct);
         return new { total, complete, pending = total - complete };
     }
 
@@ -354,11 +339,7 @@ public sealed partial class StudentsService(
     {
         var now = DateTime.Now;
         var monthStart = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Local).ToUniversalTime();
-        var total = await db.Set<Student>().CountAsync(ct);
-        var active = await db.Set<Student>().CountAsync(s => s.Status == "active", ct);
-        var addedThisMonth = await db.Set<Student>().CountAsync(s => s.CreatedAt >= monthStart, ct);
-        var pendingEnrollment = await db.Set<Admission>().CountAsync(a => a.Status == "approved", ct);
-        var classes = await db.Set<SchoolClass>().CountAsync(ct);
+        var (total, active, addedThisMonth, pendingEnrollment, classes) = await studentQueries.SummaryAsync(monthStart, ct);
         return new { total, active, inactive = total - active, addedThisMonth, pendingEnrollment, classes };
     }
 

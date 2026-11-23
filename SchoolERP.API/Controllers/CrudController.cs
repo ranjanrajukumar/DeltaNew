@@ -1,6 +1,5 @@
-using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.ModelBinding;
+using SchoolERP.API.Extensions;
 using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Application.Common.Helpers;
 
@@ -11,7 +10,7 @@ namespace SchoolERP.API.Controllers;
 /// route, the writable <see cref="Fields"/>, and overrides <see cref="ListAsync"/> when the list needs joined data.
 /// </summary>
 [ApiController]
-public abstract class CrudController<T>(ICrudService<T> crud) : ControllerBase where T : class, new()
+public abstract class CrudController<T, TRequest>(ICrudService<T> crud) : ControllerBase where T : class, new()
 {
     protected ICrudService<T> Crud => crud;
 
@@ -35,17 +34,17 @@ public abstract class CrudController<T>(ICrudService<T> crud) : ControllerBase w
     public async Task<IActionResult> List(CancellationToken ct) => Ok(await ListAsync(ct));
 
     [HttpPost]
-    public async Task<IActionResult> Create([FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] JsonObject? json, CancellationToken ct)
+    public async Task<IActionResult> Create([FromBody] TRequest request, CancellationToken ct)
     {
         CheckWrite();
-        return StatusCode(201, new { id = await crud.CreateAsync(new Body(json), Fields, ct) });
+        return StatusCode(201, new { id = await crud.CreateAsync(RequestDtoMapper.ToBody(request), Fields, ct) });
     }
 
     [HttpPut("{id:int}")]
-    public async Task<IActionResult> Update(int id, [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] JsonObject? json, CancellationToken ct)
+    public async Task<IActionResult> Update(int id, [FromBody] TRequest request, CancellationToken ct)
     {
         CheckWrite();
-        return await crud.UpdateAsync(id, new Body(json), Fields, ct) ? Ok(new { ok = true }) : NotFound(new { error = "Not found" });
+        return await crud.UpdateAsync(id, RequestDtoMapper.ToBody(request), Fields, ct) ? Ok(new { ok = true }) : NotFound(new { error = "Not found" });
     }
 
     /// <summary>What DELETE /:id does; a plain delete unless overridden (a missing row is not an error).</summary>

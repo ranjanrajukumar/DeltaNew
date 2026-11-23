@@ -21,6 +21,3 @@ public class HttpException(int status, string message, IReadOnlyList<string>? er
     /// <summary>400 with the first problem as the error and the whole list as errors.</summary>
     public static HttpException Invalid(IReadOnlyList<string> errors) => new(400, errors[0], errors);
 }
-
-/// <summary>A delete refused because live rows still refer to the record (the Node app's FK error 1451).</summary>
-public sealed class StillReferencedException(string detail) : Exception(detail);

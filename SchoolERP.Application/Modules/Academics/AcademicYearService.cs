@@ -5,6 +5,8 @@ using SchoolERP.Application.Interfaces;
 using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
+using SchoolERP.Contracts.Academics;
+using System.Text.Json.Nodes;
 
 namespace SchoolERP.Application.Modules.Academics;
 
@@ -18,22 +20,24 @@ public sealed class AcademicYearService(IAcademicYearRepository years, IUnitOfWo
         if (start != default && end != default && end <= start) throw HttpException.BadRequest("End date must be after the start date");
     }
 
-    public Task<List<AcademicYear>> ListAsync(CancellationToken ct = default) => years.ListByStartDescendingAsync(ct);
+    public async Task<List<AcademicYearResponse>> ListAsync(CancellationToken ct = default) =>
+        (await years.ListByStartDescendingAsync(ct)).Select(year => new AcademicYearResponse(
+            year.Id, year.Name, year.StartDate, year.EndDate, year.IsCurrent)).ToList();
 
-    public async Task<int> CreateAsync(Body body, CancellationToken ct = default)
+    public async Task<int> CreateAsync(AcademicYearRequest request, CancellationToken ct = default)
     {
         var year = new AcademicYear();
-        CrudService.Apply(body, Fields, year, blankAsNull: false);
+        CrudService.Apply(ToBody(request), Fields, year, blankAsNull: false);
         Check(year.StartDate, year.EndDate);
         years.Add(year);
         await unitOfWork.SaveChangesAsync(ct);
         return year.Id;
     }
 
-    public async Task UpdateAsync(int id, Body body, CancellationToken ct = default)
+    public async Task UpdateAsync(int id, AcademicYearRequest request, CancellationToken ct = default)
     {
         var year = await years.FindAsync(id, ct) ?? throw HttpException.NotFound("Academic year not found");
-        CrudService.Apply(body, Fields, year, blankAsNull: false);
+        CrudService.Apply(ToBody(request), Fields, year, blankAsNull: false);
         Check(year.StartDate, year.EndDate);
         await unitOfWork.SaveChangesAsync(ct);
     }
@@ -53,5 +57,14 @@ public sealed class AcademicYearService(IAcademicYearRepository years, IUnitOfWo
         var year = await years.FindAsync(id, ct) ?? throw HttpException.NotFound("Academic year not found");
         years.Remove(year);
         await unitOfWork.SaveChangesAsync(ct);
+    }
+
+    private static Body ToBody(AcademicYearRequest request)
+    {
+        var json = new JsonObject();
+        if (request.Name is not null) json["name"] = request.Name;
+        if (request.StartDate is { } start) json["startDate"] = start.ToString("yyyy-MM-dd");
+        if (request.EndDate is { } end) json["endDate"] = end.ToString("yyyy-MM-dd");
+        return new Body(json);
     }
 }

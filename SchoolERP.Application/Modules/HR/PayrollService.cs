@@ -1,6 +1,8 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
@@ -12,7 +14,7 @@ namespace SchoolERP.Application.Modules.HR;
 /// Salaries and payslips (the Node app's hr/payroll.routes.js). Separation of duties: the accountant prepares salaries and
 /// payslips; only an admin approves a payment, and the approver is recorded on the payslip.
 /// </summary>
-public sealed partial class PayrollService(IApplicationDbContext db, ICurrentUser user)
+public sealed partial class PayrollService(IStaffRepository staffRepo, IStaffSalaryRepository salaries, IPayslipRepository payslips, IUnitOfWork unitOfWork, ICurrentUser user) : IPayrollService
 {
     private static string NameOf(Staff s) => $"{s.FirstName} {s.LastName}";
 
@@ -21,7 +23,7 @@ public sealed partial class PayrollService(IApplicationDbContext db, ICurrentUse
 
     /// <summary>Every active staff member with their salary terms (if set).</summary>
     public async Task<List<object>> SalariesAsync(CancellationToken ct = default) =>
-        (await db.Set<Staff>().AsNoTracking().Include(s => s.StaffSalary).Where(s => s.Status == "active").OrderBy(s => s.FirstName).ToListAsync(ct))
+        (await staffRepo.ActiveWithSalaryAsync(ct))
         .Select(s => (object)new
         {
             staffId = s.Id, staffNo = s.StaffNo, name = NameOf(s),
@@ -39,15 +41,15 @@ public sealed partial class PayrollService(IApplicationDbContext db, ICurrentUse
         var allowances = Money("allowances", 0);
         var deductions = Money("deductions", 0);
         if (Cents(deductions) > Cents(basic) + Cents(allowances)) throw HttpException.BadRequest("Deductions exceed the gross salary");
-        if (!await db.Set<Staff>().AnyAsync(x => x.Id == staffId, ct)) throw HttpException.NotFound("Staff not found");
-        var row = await db.Set<StaffSalary>().FirstOrDefaultAsync(x => x.StaffId == staffId, ct);
+        if (!await staffRepo.ExistsAsync(staffId, ct)) throw HttpException.NotFound("Staff not found");
+        var row = await salaries.FindByStaffAsync(staffId, ct);
         if (row is null)
         {
             row = new StaffSalary { StaffId = staffId };
-            db.Set<StaffSalary>().Add(row);
+            salaries.Add(row);
         }
         (row.Basic, row.Allowances, row.Deductions) = (basic, allowances, deductions);
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     private static void CheckMonth(string? month)
@@ -58,7 +60,7 @@ public sealed partial class PayrollService(IApplicationDbContext db, ICurrentUse
     public async Task<List<JsonObject>> PayslipsAsync(string? month, CancellationToken ct = default)
     {
         CheckMonth(month);
-        return (await db.Set<Payslip>().AsNoTracking().Include(p => p.Staff).Where(p => p.Month == month && p.Staff != null).OrderBy(p => p.Id).ToListAsync(ct))
+        return (await payslips.ForMonthWithStaffAsync(month!, ct))
             .Select(p =>
             {
                 var o = JsonDefaults.ToJsonObject(p);
@@ -73,39 +75,39 @@ public sealed partial class PayrollService(IApplicationDbContext db, ICurrentUse
     public async Task<object> GenerateAsync(string? month, CancellationToken ct = default)
     {
         CheckMonth(month);
-        var salaries = await db.Set<StaffSalary>().AsNoTracking().Where(s => s.Staff != null && s.Staff.Status == "active").ToListAsync(ct);
-        var existing = (await db.Set<Payslip>().Where(p => p.Month == month).Select(p => p.StaffId).ToListAsync(ct)).ToHashSet();
-        var rows = salaries.Where(s => !existing.Contains(s.StaffId)).Select(s => new Payslip
+        var terms = await salaries.ForActiveStaffAsync(ct);
+        var existing = await payslips.StaffIdsForMonthAsync(month!, ct);
+        var rows = terms.Where(s => !existing.Contains(s.StaffId)).Select(s => new Payslip
         {
             StaffId = s.StaffId, Month = month!, Basic = s.Basic, Allowances = s.Allowances, Deductions = s.Deductions,
             Net = (Cents(s.Basic) + Cents(s.Allowances) - Cents(s.Deductions)) / 100,
         }).ToList();
         if (rows.Count > 0)
         {
-            db.Set<Payslip>().AddRange(rows);
-            await db.SaveChangesAsync(ct);
+            payslips.AddRange(rows);
+            await unitOfWork.SaveChangesAsync(ct);
         }
-        return new { created = rows.Count, skipped = salaries.Count - rows.Count };
+        return new { created = rows.Count, skipped = terms.Count - rows.Count };
     }
 
-    public Task PayAsync(int id, CancellationToken ct = default) => db.InTransactionAsync(async () =>
+    public Task PayAsync(int id, CancellationToken ct = default) => unitOfWork.InTransactionAsync(async () =>
     {
-        var slip = await db.Set<Payslip>().FirstOrDefaultAsync(p => p.Id == id, ct) ?? throw HttpException.NotFound("Payslip not found");
+        var slip = await payslips.FindAsync(id, ct) ?? throw HttpException.NotFound("Payslip not found");
         if (slip.Status == "paid") throw HttpException.Conflict("This payslip is already paid");
         slip.Status = "paid";
         slip.PaidOn = Clock.Today();
         slip.PaidByName = user.Name;
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
         return true;
     }, ct);
 
     /// <summary>Only drafts can be removed (e.g. to regenerate after changing salary terms).</summary>
     public async Task DeleteAsync(int id, CancellationToken ct = default)
     {
-        var slip = await db.Set<Payslip>().FirstOrDefaultAsync(p => p.Id == id, ct) ?? throw HttpException.NotFound("Payslip not found");
+        var slip = await payslips.FindAsync(id, ct) ?? throw HttpException.NotFound("Payslip not found");
         if (slip.Status == "paid") throw HttpException.Conflict("A paid payslip cannot be deleted");
-        db.Set<Payslip>().Remove(slip);
-        await db.SaveChangesAsync(ct);
+        payslips.Remove(slip);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     [GeneratedRegex(@"^\d{4}-(0[1-9]|1[0-2])$")]

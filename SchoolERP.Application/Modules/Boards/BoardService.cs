@@ -8,9 +8,6 @@ using SchoolERP.Domain.Entities;
 
 namespace SchoolERP.Application.Modules.Boards;
 
-/// <summary>A rule version in force: its payload (the rule itself) plus where it came from.</summary>
-public sealed record RuleHit(int Id, int BoardId, int Version, bool Verified, string? SourceRef, int? EffectiveYearId, JsonNode? Payload);
-
 /// <summary>Boards and their versioned rules (the Node app's boards/boardRules.service.js).</summary>
 public sealed class BoardService(IBoardRepository boards, IAcademicYearRepository years, IClassRepository classes, IUnitOfWork unitOfWork) : IBoardService
 {

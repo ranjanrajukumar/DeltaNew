@@ -8,26 +8,13 @@ using SchoolERP.Domain.Entities;
 
 namespace SchoolERP.Infrastructure.Persistence.Seed;
 
-public sealed class SeedOptions
-{
-    public const string Section = "Seed";
-
-    /// <summary>Apply pending EF Core migrations at startup (the Node app synced its schema on every start).</summary>
-    public bool MigrateOnStartup { get; set; } = true;
-
-    public string AdminEmail { get; set; } = "admin@school.local";
-
-    /// <summary>The first administrator's password; change it after the first sign-in.</summary>
-    public string AdminPassword { get; set; } = "admin123";
-}
-
 /// <summary>
 /// First-run data the Node app's config/migration.js created: the initial administrator, the two boards every class needs,
 /// their starter rules, leave types and LMS tags. Safe to run on every start: nothing that exists is touched. The other starter
 /// data (masters, role presets, report starters, app menu) is seeded as their modules are ported.
 /// </summary>
 public sealed class DatabaseSeeder(
-    SchoolErpDbContext db,
+    ApplicationDbContext db,
     IPasswordHasher hasher,
     IOptions<SeedOptions> options,
     ILogger<DatabaseSeeder> logger)

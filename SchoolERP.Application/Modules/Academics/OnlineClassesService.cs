@@ -1,11 +1,13 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Crud;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Domain.Entities;
+using SchoolERP.Application.Interfaces.Services;
 
 namespace SchoolERP.Application.Modules.Academics;
 
@@ -13,7 +15,7 @@ namespace SchoolERP.Application.Modules.Academics;
 /// Live classes over a video link, scheduled by admins and teachers (the Node app's academics/onlineClasses.routes.js).
 /// Students see theirs through the portal.
 /// </summary>
-public sealed partial class OnlineClassesService(IApplicationDbContext db, ICurrentUser user)
+public sealed partial class OnlineClassesService(IOnlineClassRepository onlineClasses, IUnitOfWork unitOfWork, ICurrentUser user) : IOnlineClassService
 {
     private static readonly string[] Fields = ["title", "classId", "subjectId", "classDate", "startTime", "endTime", "link", "teacherName", "notes"];
 
@@ -36,15 +38,7 @@ public sealed partial class OnlineClassesService(IApplicationDbContext db, ICurr
     /// <summary>Upcoming first for "upcoming", newest first for "past"; at most 300.</summary>
     public async Task<List<JsonObject>> ListAsync(int? classId, string? when, CancellationToken ct = default)
     {
-        var day = Clock.Today();
-        var q = db.Set<OnlineClass>().AsNoTracking().Include(c => c.SchoolClass).Include(c => c.Subject)
-            .Where(c => c.SchoolClass != null && (classId == null || c.ClassId == classId));
-        if (when == "upcoming") q = q.Where(c => c.ClassDate >= day);
-        if (when == "past") q = q.Where(c => c.ClassDate < day);
-        q = when == "past"
-            ? q.OrderByDescending(c => c.ClassDate).ThenByDescending(c => c.StartTime)
-            : q.OrderBy(c => c.ClassDate).ThenBy(c => c.StartTime);
-        return (await q.Take(300).ToListAsync(ct)).Select(Shape).ToList();
+        return (await onlineClasses.ListAsync(classId, when, Clock.Today(), ct)).Select(Shape).ToList();
     }
 
     /// <summary>
@@ -64,9 +58,9 @@ public sealed partial class OnlineClassesService(IApplicationDbContext db, ICurr
         var title = b.Str("title");
         if (string.IsNullOrEmpty(title)) throw HttpException.BadRequest("Title is required");
         if (title.Length > 160) throw HttpException.BadRequest("Title must be 160 characters or fewer");
-        if (b.Id("classId") is not { } classId || !await db.Set<SchoolClass>().AnyAsync(c => c.Id == classId, ct))
+        if (b.Id("classId") is not { } classId || !await onlineClasses.ClassExistsAsync(classId, ct))
             throw HttpException.BadRequest("Choose the class this is for");
-        if (b.Truthy("subjectId") && (b.Int("subjectId") is not { } subjectId || !await db.Set<Subject>().AnyAsync(s => s.Id == subjectId, ct)))
+        if (b.Truthy("subjectId") && (b.Int("subjectId") is not { } subjectId || !await onlineClasses.SubjectExistsAsync(subjectId, ct)))
             throw HttpException.BadRequest("That subject does not exist");
         var date = b.Str("classDate");
         if (date is null || !IsoDate().IsMatch(date) || Body.AsDate(d["classDate"]) is null) throw HttpException.BadRequest("Date is required");
@@ -90,26 +84,26 @@ public sealed partial class OnlineClassesService(IApplicationDbContext db, ICurr
         var clean = await CleanAsync(input, ct);
         var row = new OnlineClass();
         CrudService.Apply(clean, Fields, row, blankAsNull: false);
-        db.Set<OnlineClass>().Add(row);
-        await db.SaveChangesAsync(ct);
+        onlineClasses.Add(row);
+        await unitOfWork.SaveChangesAsync(ct);
         return row.Id;
     }
 
     public async Task UpdateAsync(int id, JsonObject? body, CancellationToken ct = default)
     {
-        var row = await db.Set<OnlineClass>().FirstOrDefaultAsync(c => c.Id == id, ct) ?? throw HttpException.NotFound("Online class not found");
+        var row = await onlineClasses.FindAsync(id, ct) ?? throw HttpException.NotFound("Online class not found");
         var input = JsonDefaults.ToJsonObject(row); // { ...row.toJSON(), ...req.body }
         foreach (var (k, v) in body ?? []) input[k] = v?.DeepClone();
         var clean = await CleanAsync(input, ct);
         CrudService.Apply(clean, Fields, row, blankAsNull: false);
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)
     {
-        var row = await db.Set<OnlineClass>().FirstOrDefaultAsync(c => c.Id == id, ct) ?? throw HttpException.NotFound("Online class not found");
-        db.Set<OnlineClass>().Remove(row);
-        await db.SaveChangesAsync(ct);
+        var row = await onlineClasses.FindAsync(id, ct) ?? throw HttpException.NotFound("Online class not found");
+        onlineClasses.Remove(row);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     [GeneratedRegex("^([01][0-9]|2[0-3]):[0-5][0-9]$")]

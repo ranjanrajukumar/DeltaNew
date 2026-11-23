@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using SchoolERP.API.Extensions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Application.Modules.Authentication;
 using SchoolERP.Domain.Entities;
 
@@ -197,8 +198,8 @@ public sealed partial class ApiAccessMiddleware(RequestDelegate next)
             try
             {
                 await using var scope = scopes.CreateAsyncScope();
-                var db = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
-                db.Set<AuditLog>().Add(new AuditLog
+                var auditLogs = scope.ServiceProvider.GetRequiredService<IAuditLogRepository>();
+                auditLogs.Add(new AuditLog
                 {
                     UserId = userId,
                     UserName = userName,
@@ -210,7 +211,7 @@ public sealed partial class ApiAccessMiddleware(RequestDelegate next)
                     // an upload records what was uploaded (set by the controller), not megabytes of file data
                     Details = context.Items.TryGetValue(AuditDetailsKey, out var own) && own is string ownText ? ownText : details,
                 });
-                await db.SaveChangesAsync();
+                await auditLogs.SaveChangesAsync();
             }
             catch (Exception ex)
             {

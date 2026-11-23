@@ -1,9 +1,10 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Application.Modules.Academics;
 using SchoolERP.Application.Modules.Boards;
 using SchoolERP.Application.Interfaces.Services;
@@ -12,7 +13,10 @@ using SchoolERP.Domain.Entities;
 namespace SchoolERP.Application.Modules.Exams;
 
 /// <summary>Grade setup, the board exam pattern, exam groups, merit lists and revaluation (the Node app's exams/examExtras.service.js).</summary>
-public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exams, GradingService grading, IBoardService boards, ICurrentUser user)
+public sealed class ExamExtrasService(
+    IExamRepository examRepo, IExamGroupRepository groupRepo, IMarkRepository markRepo, IRevaluationRepository revaluations,
+    IExamQueryRepository examQueries, IUnitOfWork unitOfWork,
+    IExamsService exams, IGradingService grading, IBoardService boards, ICurrentUser user) : IExamExtrasService
 {
     private static string? ClassNameOf(SchoolClass? c) => c is null ? null : $"{c.Name}-{c.Section}";
 
@@ -42,12 +46,12 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
     public async Task<object> ApplyExamPatternAsync(JsonNode? classIdsNode, CancellationToken ct = default)
     {
         var ids = classIdsNode is JsonArray a ? a.Select(n => Body.AsNumber(n) is { } x ? (int)x : 0).ToList() : [];
-        var classes = await db.Set<SchoolClass>().AsNoTracking().Where(c => ids.Count == 0 || ids.Contains(c.Id)).ToListAsync(ct);
+        var classes = await examRepo.ClassesAsync(ids, ct);
         if (classes.Count == 0) throw HttpException.BadRequest("No classes to apply a pattern to");
         int examCount = 0, groupCount = 0;
         var skipped = new List<string>();
         var rules = new Dictionary<int, JsonNode?>(); // one lookup per board
-        await db.InTransactionAsync(async () =>
+        await unitOfWork.InTransactionAsync(async () =>
         {
             foreach (var cls in classes)
             {
@@ -62,28 +66,28 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
                     skipped.Add($"{label} (no written exams)");
                     continue;
                 }
-                if (await db.Set<ExamGroup>().AnyAsync(g => g.ClassId == cls.Id && g.Name == groupName, ct))
+                if (await groupRepo.ExistsAsync(cls.Id, groupName, ct))
                 {
                     skipped.Add($"{label} (already has {groupName})");
                     continue;
                 }
                 var group = new ExamGroup { ClassId = cls.Id, Name = groupName };
-                db.Set<ExamGroup>().Add(group);
-                await db.SaveChangesAsync(ct);
+                groupRepo.Add(group);
+                await unitOfWork.SaveChangesAsync(ct);
                 groupCount++;
-                var have = (await db.Set<Exam>().Where(e => e.ClassId == cls.Id).Select(e => e.Name).ToListAsync(ct)).ToHashSet();
+                var have = (await examRepo.NamesInClassAsync(cls.Id, ct)).ToHashSet();
                 foreach (var p in pattern?["exams"] as JsonArray ?? [])
                 {
                     var name = Body.AsString(p?["name"]) ?? "";
                     if (have.Contains(name)) continue;
-                    db.Set<Exam>().Add(new Exam
+                    examRepo.Add(new Exam
                     {
                         Name = name, ClassId = cls.Id, MaxMarks = (int)(Body.AsNumber(p?["maxMarks"]) ?? 100),
                         Weight = (int)(Body.AsNumber(p?["weight"]) ?? 100), ExamGroupId = group.Id,
                     });
                     examCount++;
                 }
-                await db.SaveChangesAsync(ct);
+                await unitOfWork.SaveChangesAsync(ct);
             }
             return true;
         }, ct);
@@ -94,18 +98,14 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
 
     public async Task<List<object>> ListGroupsAsync(CancellationToken ct = default)
     {
-        var groups = await db.Set<ExamGroup>().AsNoTracking().Include(g => g.SchoolClass).Where(g => g.SchoolClass != null)
-            .OrderByDescending(g => g.Id).ToListAsync(ct);
-        var groupIds = groups.Select(g => g.Id).ToList();
-        var members = await db.Set<Exam>().AsNoTracking().Where(e => e.ExamGroupId != null && groupIds.Contains(e.ExamGroupId.Value))
-            .OrderBy(e => e.Id).Select(e => new { e.Id, e.Name, e.Weight, Group = e.ExamGroupId!.Value }).ToListAsync(ct);
+        var (groups, members) = await examQueries.GroupsAsync(ct);
         return groups.Select(g => (object)new
         {
             id = g.Id,
             classId = g.ClassId,
             name = g.Name,
-            className = ClassNameOf(g.SchoolClass),
-            exams = members.Where(e => e.Group == g.Id).Select(e => new { id = e.Id, name = e.Name, weight = e.Weight }),
+            className = g.ClassName,
+            exams = members.Where(e => e.GroupId == g.Id).Select(e => new { id = e.Id, name = e.Name, weight = e.Weight }),
         }).ToList();
     }
 
@@ -113,28 +113,28 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
     {
         if (!b.Truthy("classId") || b.IsBlankTrimmed("name")) throw HttpException.BadRequest("Class and name are required");
         var group = new ExamGroup { ClassId = b.Int("classId") ?? throw HttpException.BadRequest("Invalid value in the request"), Name = b.Trimmed("name") };
-        db.Set<ExamGroup>().Add(group);
-        await db.SaveChangesAsync(ct);
+        groupRepo.Add(group);
+        await unitOfWork.SaveChangesAsync(ct);
         return group.Id;
     }
 
     public async Task DeleteGroupAsync(int id, CancellationToken ct = default)
     {
-        var group = await db.Set<ExamGroup>().FirstOrDefaultAsync(g => g.Id == id, ct) ?? throw HttpException.NotFound("Exam group not found");
-        db.Set<ExamGroup>().Remove(group);
-        await db.SaveChangesAsync(ct);
+        var group = await groupRepo.FindAsync(id, ct) ?? throw HttpException.NotFound("Exam group not found");
+        groupRepo.Remove(group);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     /// <summary>Attaches an exam to a group of the same class, or detaches it when the group is empty.</summary>
     public async Task AssignExamAsync(Body b, CancellationToken ct = default)
     {
         var examId = b.Int("examId");
-        var exam = examId is null ? null : await db.Set<Exam>().FirstOrDefaultAsync(e => e.Id == examId, ct);
+        var exam = examId is null ? null : await examRepo.FindAsync(examId.Value, ct);
         if (exam is null) throw HttpException.NotFound("Exam not found");
         int? groupId = b.Truthy("groupId") ? b.Int("groupId") : null;
         if (b.Truthy("groupId"))
         {
-            var group = groupId is null ? null : await db.Set<ExamGroup>().AsNoTracking().FirstOrDefaultAsync(g => g.Id == groupId, ct);
+            var group = groupId is null ? null : await groupRepo.GetAsync(groupId.Value, ct);
             if (group is null) throw HttpException.NotFound("Exam group not found");
             if (group.ClassId != exam.ClassId) throw HttpException.BadRequest("An exam can only join a group of its own class");
         }
@@ -145,7 +145,7 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
             if (b.Num("weight") is not { } w || w != Math.Floor(w) || w < 1 || w > 1000) throw HttpException.BadRequest("Weight must be a whole number from 1 to 1000");
             exam.Weight = (int)w;
         }
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     /// <summary>One student's combined result in a group.</summary>
@@ -181,9 +181,9 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
     /// </summary>
     public async Task<GroupResults> GroupResultsAsync(int groupId, CancellationToken ct = default)
     {
-        var group = await db.Set<ExamGroup>().AsNoTracking().Include(g => g.SchoolClass).FirstOrDefaultAsync(g => g.Id == groupId, ct)
+        var group = await groupRepo.GetWithClassAsync(groupId, ct)
             ?? throw HttpException.NotFound("Exam group not found");
-        var groupExams = await db.Set<Exam>().AsNoTracking().Where(e => e.ExamGroupId == groupId).OrderBy(e => e.Id).ToListAsync(ct);
+        var groupExams = await examRepo.InGroupAsync(groupId, ct);
         if (groupExams.Count == 0) return new GroupResults(group, [], []);
 
         var policy = await grading.LoadAsync(await boards.OfClassAsync(group.SchoolClass, ct) ?? throw HttpException.Conflict("Add a board first"), ct: ct);
@@ -239,7 +239,7 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
         else
         {
             var r = await exams.ResultsAsync(examId!.Value, ct: ct);
-            var cls = await db.Set<SchoolClass>().AsNoTracking().FirstOrDefaultAsync(c => c.Id == r.Exam.ClassId, ct);
+            var cls = await examRepo.ClassAsync(r.Exam.ClassId, ct);
             title = r.Exam.Name;
             className = ClassNameOf(cls);
             rows = r.Rows.Select(x => (x.ToJson(), x.Total, x.Result)).ToList();
@@ -291,28 +291,24 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
     }
 
     public async Task<List<JsonObject>> ListRevaluationsAsync(string? status, int? studentId, int? examId, CancellationToken ct = default) =>
-        (await db.Set<RevaluationRequest>().AsNoTracking().Include(r => r.Exam).Include(r => r.Subject).Include(r => r.Student)
-            .Where(r => r.Exam != null && r.Subject != null && r.Student != null
-                && (string.IsNullOrEmpty(status) || r.Status == status) && (studentId == null || r.StudentId == studentId) && (examId == null || r.ExamId == examId))
-            .OrderByDescending(r => r.Id).Take(300).ToListAsync(ct))
-        .Select(Shape).ToList();
+        (await revaluations.ListAsync(status, studentId, examId, ct)).Select(Shape).ToList();
 
     /// <summary>The student must have a mark in that exam and subject; one open request per student, exam and subject.</summary>
     public async Task<int> RequestRevaluationAsync(Body b, int requestedBy, CancellationToken ct = default)
     {
         if (b.IsBlankTrimmed("reason")) throw HttpException.BadRequest("A reason is required");
         int? examId = b.Int("examId"), studentId = b.Int("studentId"), subjectId = b.Int("subjectId");
-        var mark = await db.Set<Mark>().AsNoTracking().FirstOrDefaultAsync(m => m.ExamId == examId && m.StudentId == studentId && m.SubjectId == subjectId, ct)
+        var mark = await markRepo.GetAsync(examId, studentId, subjectId, ct)
             ?? throw HttpException.NotFound("There is no recorded mark for that student, exam and subject");
-        if (await db.Set<RevaluationRequest>().AnyAsync(r => r.ExamId == examId && r.StudentId == studentId && r.SubjectId == subjectId && r.Status == "pending", ct))
+        if (await revaluations.PendingExistsAsync(examId, studentId, subjectId, ct))
             throw HttpException.Conflict("A revaluation request is already pending for this subject");
         var row = new RevaluationRequest
         {
             ExamId = mark.ExamId, StudentId = mark.StudentId, SubjectId = mark.SubjectId, OriginalMarks = mark.Marks,
             Reason = b.Trimmed("reason"), RequestedBy = requestedBy,
         };
-        db.Set<RevaluationRequest>().Add(row);
-        await db.SaveChangesAsync(ct);
+        revaluations.Add(row);
+        await unitOfWork.SaveChangesAsync(ct);
         return row.Id;
     }
 
@@ -320,9 +316,9 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
     /// Accepting records the corrected mark on the exam itself in the same transaction, so results and report cards update at
     /// once; the request keeps the original mark as the audit trail. Marks may go up or down.
     /// </summary>
-    public Task DecideRevaluationAsync(int id, string decision, Body b, CancellationToken ct = default) => db.InTransactionAsync(async () =>
+    public Task DecideRevaluationAsync(int id, string decision, Body b, CancellationToken ct = default) => unitOfWork.InTransactionAsync(async () =>
     {
-        var req = await db.Set<RevaluationRequest>().Include(r => r.Exam).FirstOrDefaultAsync(r => r.Id == id, ct)
+        var req = await revaluations.FindWithExamAsync(id, ct)
             ?? throw HttpException.NotFound("Revaluation request not found");
         if (req.Status != "pending") throw HttpException.Conflict($"This request is already {req.Status}");
         var remarks = b.Str("remarks");
@@ -332,11 +328,11 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
             if (!b.Has("newMarks") || (b.Raw("newMarks") is JsonValue v && v.TryGetValue<string>(out var s) && s == "")
                 || b.Num("newMarks") is not { } marks || marks < 0 || marks > max)
                 throw HttpException.BadRequest($"The revised mark must be between 0 and {max}");
-            var mark = await db.Set<Mark>().FirstOrDefaultAsync(m => m.ExamId == req.ExamId && m.StudentId == req.StudentId && m.SubjectId == req.SubjectId, ct);
+            var mark = await markRepo.FindAsync(req.ExamId, req.StudentId, req.SubjectId, ct);
             if (mark is null)
             {
                 mark = new Mark { ExamId = req.ExamId, StudentId = req.StudentId, SubjectId = req.SubjectId };
-                db.Set<Mark>().Add(mark);
+                markRepo.Add(mark);
             }
             mark.Marks = (decimal)marks;
             req.Status = "accepted";
@@ -351,7 +347,7 @@ public sealed class ExamExtrasService(IApplicationDbContext db, ExamsService exa
         }
         req.DecidedBy = user.Id;
         req.DecidedByName = user.Name;
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
         return true;
     }, ct);
 }

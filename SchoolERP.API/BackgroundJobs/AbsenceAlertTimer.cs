@@ -1,4 +1,4 @@
-using SchoolERP.Application.Modules.Attendance;
+using SchoolERP.Application.Interfaces.Services;
 
 namespace SchoolERP.API.BackgroundJobs;
 
@@ -18,7 +18,7 @@ public sealed class AbsenceAlertTimer(IServiceScopeFactory scopes, ILogger<Absen
             try
             {
                 await using var scope = scopes.CreateAsyncScope();
-                await scope.ServiceProvider.GetRequiredService<AttendanceExtrasService>().RunAutoAlertsAsync(ct: stoppingToken);
+                await scope.ServiceProvider.GetRequiredService<IAttendanceExtrasService>().RunAutoAlertsAsync(ct: stoppingToken);
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {

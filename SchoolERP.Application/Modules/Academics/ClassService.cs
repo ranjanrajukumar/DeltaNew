@@ -8,14 +8,6 @@ using SchoolERP.Domain.Entities;
 
 namespace SchoolERP.Application.Modules.Academics;
 
-/// <summary>A class row as the list returns it: the class's columns plus studentCount and classTeacherName.</summary>
-public sealed record ClassListRow(
-    int Id, string Name, int? BranchId, int? ClassTeacherId, int? BoardId, string Board, string? Room, string Section,
-    string? Authadd, string? Authedit, string? Authdel, DateTime? Addondt, DateTime? Editondt, DateTime? Delondt, bool Delstatus,
-    int StudentCount, string? ClassTeacherName);
-
-public enum ClassDeleteResult { Deleted, Missing, InUse }
-
 /// <summary>Classes (the Node app's academics/classes.routes.js and classes.service.js).</summary>
 public sealed partial class ClassService(
     IClassRepository classes, IClassQueryRepository classQueries, IStaffRepository staff, IBoardService boards, ISubjectMapService subjectMap,

@@ -1,9 +1,10 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Application.Modules.Boards;
 using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
@@ -11,13 +12,16 @@ using SchoolERP.Domain.Entities;
 namespace SchoolERP.Application.Modules.Academics;
 
 /// <summary>The weekly timetable, bell times, teacher availability and the generator (the Node app's academics/timetable.routes.js).</summary>
-public sealed partial class TimetableService(IApplicationDbContext db, IBoardService boards, ICurrentUser user)
+public sealed partial class TimetableService(
+    ITimetableRepository timetable, ITimetableQueryRepository timetableQueries, IClassRepository classRepository,
+    IClassSubjectRepository classSubjects, ISubjectRepository subjectRepository, IUnitOfWork unitOfWork,
+    IBoardService boards, ICurrentUser user) : ITimetableService
 {
     private const string PeriodsKey = "timetable.periods";
 
     public sealed record Bell(int Period, string Label, string Kind, string Start, string End);
 
-    private static object Shape(TimetableSlot s) => new
+    private static object Shape(ITimetableQueryRepository.SlotRow s) => new
     {
         id = s.Id,
         classId = s.ClassId,
@@ -26,10 +30,10 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
         subjectId = s.SubjectId,
         staffId = s.StaffId,
         roomId = s.RoomId,
-        roomName = s.Room?.Name,
-        className = s.SchoolClass is { } c ? $"{c.Name}-{c.Section}" : null,
-        subjectName = s.Subject?.Name,
-        teacherName = s.Staff is { } t ? $"{t.FirstName} {t.LastName}" : null,
+        roomName = s.RoomName,
+        className = s.ClassName,
+        subjectName = s.SubjectName,
+        teacherName = s.TeacherName,
     };
 
     /// <summary>The default bell times: eight periods of 40 minutes from 08:00.</summary>
@@ -54,7 +58,7 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
     {
         var board = await boards.FindAsync(string.IsNullOrEmpty(boardName) ? "CBSE" : boardName, ct);
         if (await boards.ResolveRuleAsync(board, "bell_schedule", ct: ct) is { Payload: { } payload }) return payload;
-        var row = await db.Set<Setting>().AsNoTracking().Where(s => s.Key == PeriodsKey).Select(s => s.Value).FirstOrDefaultAsync(ct);
+        var row = await timetable.SettingValueAsync(PeriodsKey, ct);
         return row is not null ? JsonNode.Parse(row) ?? DefaultPeriods() : DefaultPeriods();
     }
 
@@ -91,7 +95,7 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
             if (Minutes(p.End) <= Minutes(p.Start)) throw HttpException.BadRequest($"Period {p.Period}: the end must be after the start");
             if (i > 0 && Minutes(p.Start) < Minutes(clean[i - 1].End)) throw HttpException.BadRequest($"Period {p.Period} starts before period {p.Period - 1} ends");
         }
-        foreach (var period in await db.Set<TimetableSlot>().Select(s => s.Period).Distinct().ToListAsync(ct))
+        foreach (var period in await timetable.UsedPeriodsAsync(ct))
         {
             var row = clean.FirstOrDefault(p => p.Period == period);
             if (row is null || row.Kind == "break")
@@ -109,19 +113,12 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
     public async Task<List<object>> ListAsync(int? classId, int? staffId, CancellationToken ct = default)
     {
         if (classId is null && staffId is null) throw HttpException.BadRequest("classId or staffId is required");
-        var slots = await db.Set<TimetableSlot>().AsNoTracking()
-            .Include(s => s.SchoolClass).Include(s => s.Subject).Include(s => s.Staff).Include(s => s.Room)
-            .Where(s => s.SchoolClass != null && s.Subject != null
-                && (classId == null || s.ClassId == classId) && (staffId == null || s.StaffId == staffId))
-            .OrderBy(s => s.Day).ThenBy(s => s.Period)
-            .ToListAsync(ct);
-        return slots.Select(Shape).ToList();
+        return (await timetableQueries.WeekAsync(classId, staffId, ct)).Select(Shape).ToList();
     }
 
     /// <summary>The periods a teacher cannot teach.</summary>
     public async Task<List<object>> AvailabilityAsync(int staffId, CancellationToken ct = default) =>
-        (await db.Set<StaffUnavailability>().AsNoTracking().Where(u => u.StaffId == staffId)
-            .OrderBy(u => u.Day).ThenBy(u => u.Period).Select(u => new { day = u.Day, period = u.Period }).ToListAsync(ct))
+        (await timetable.AvailabilityAsync(staffId, ct)).Select(u => new { day = u.Day, period = u.Period })
         .Cast<object>().ToList();
 
     /// <summary>{ staffId, blocked: [{ day, period }] } replaces the teacher's blocked periods. Periods they already teach are refused.</summary>
@@ -130,7 +127,7 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
         var b = new Body(json);
         if (!b.Truthy("staffId") || json?["blocked"] is not JsonArray blockedNode) throw HttpException.BadRequest("staffId and blocked are required");
         var staffId = b.Int("staffId");
-        if (staffId is null || !await db.Set<Staff>().AnyAsync(s => s.Id == staffId, ct)) throw HttpException.BadRequest("Teacher not found");
+        if (staffId is null || !await timetable.StaffExistsAsync(staffId.Value, ct)) throw HttpException.BadRequest("Teacher not found");
         var clean = new List<(double Day, double Period)>();
         var seen = new HashSet<string>();
         foreach (var n in blockedNode)
@@ -143,14 +140,14 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
         if (clean.Any(c => !(c.Day >= 1 && c.Day <= 7 && c.Period >= 1 && c.Period <= 12)))
             throw HttpException.BadRequest("Each blocked period needs a day (1-7) and a period (1-12)");
         foreach (var (day, period) in clean)
-            if (await db.Set<TimetableSlot>().AnyAsync(s => s.StaffId == staffId && s.Day == (int)day && s.Period == (int)period, ct))
+            if (await timetable.TeachesAsync(staffId.Value, (int)day, (int)period, ct))
                 throw HttpException.Conflict($"The teacher already teaches on day {day}, period {period}. Move that period first");
-        await db.InTransactionAsync(async () =>
+        await unitOfWork.InTransactionAsync(async () =>
         {
-            db.Set<StaffUnavailability>().RemoveRange(await db.Set<StaffUnavailability>().Where(u => u.StaffId == staffId).ToListAsync(ct));
-            await db.SaveChangesAsync(ct);
-            db.Set<StaffUnavailability>().AddRange(clean.Select(c => new StaffUnavailability { StaffId = staffId.Value, Day = (int)c.Day, Period = (int)c.Period }));
-            await db.SaveChangesAsync(ct);
+            timetable.RemoveAvailability(await timetable.FindAvailabilityAsync(staffId.Value, ct));
+            await unitOfWork.SaveChangesAsync(ct);
+            timetable.AddAvailability(clean.Select(c => new StaffUnavailability { StaffId = staffId.Value, Day = (int)c.Day, Period = (int)c.Period }));
+            await unitOfWork.SaveChangesAsync(ct);
             return true;
         }, ct);
         return clean.Count;
@@ -170,19 +167,19 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
         var maxTeacherPerDay = (int)Math.Min(Math.Max(b.Num("maxTeacherPerDay") is { } m and not 0 && !double.IsNaN(m) ? m : 6, 1), 12);
 
         var wanted = json?["classIds"] is JsonArray w ? w.Select(n => Body.AsNumber(n) is { } x ? (int)x : 0).ToList() : [];
-        var classes = await db.Set<SchoolClass>().AsNoTracking().Where(c => wanted.Count == 0 || wanted.Contains(c.Id)).OrderBy(c => c.Id).ToListAsync(ct);
+        var classes = await classRepository.ListByIdsAsync(wanted, ct);
         if (classes.Count == 0) throw HttpException.BadRequest("No classes to generate for");
         var classIds = classes.Select(c => c.Id).ToList();
 
-        var links = await db.Set<ClassSubject>().AsNoTracking().Where(l => classIds.Contains(l.ClassId)).ToListAsync(ct);
-        var subjectName = await db.Set<Subject>().AsNoTracking().ToDictionaryAsync(s => s.Id, s => s.Name, ct);
-        var activeStaff = (await db.Set<Staff>().Where(s => s.Status == "active").Select(s => s.Id).ToListAsync(ct)).ToHashSet();
-        var labs = await db.Set<Room>().Where(r => r.Kind == "lab").Select(r => r.Id).ToListAsync(ct);
+        var links = await classSubjects.OfClassesAsync(classIds, ct);
+        var subjectName = await subjectRepository.NamesAsync(ct);
+        var activeStaff = (await timetable.ActiveStaffIdsAsync(ct)).ToHashSet();
+        var labs = await timetable.LabRoomIdsAsync(ct);
 
         // a subject with no teacher takes the one who teaches it in another class, picking the least loaded
         var loadOf = new Dictionary<int, int>();
         var teachersOf = new Dictionary<int, List<int>>();
-        foreach (var l in await db.Set<ClassSubject>().AsNoTracking().Where(l => l.StaffId != null).ToListAsync(ct))
+        foreach (var l in await classSubjects.WithTeacherAsync(ct))
         {
             if (!activeStaff.Contains(l.StaffId!.Value)) continue;
             loadOf[l.StaffId.Value] = loadOf.GetValueOrDefault(l.StaffId.Value) + (l.PeriodsPerWeek ?? 4);
@@ -214,18 +211,14 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
                 l.PeriodsPerWeek ?? (practical ? 2 : 4), practical));
         }
 
-        var kept = await db.Set<TimetableSlot>().AsNoTracking()
-            .Where(s => !replace || !classIds.Contains(s.ClassId))
-            .Select(s => new TimetableGenerator.Busy(s.ClassId, s.Day, s.Period, s.StaffId, s.RoomId))
-            .ToListAsync(ct);
+        var kept = await timetable.BusyAsync(replace ? classIds : null, ct);
         // when filling gaps, a subject already placed counts towards its weekly periods
         if (!replace)
         {
-            var existing = await db.Set<TimetableSlot>().AsNoTracking().Where(s => classIds.Contains(s.ClassId)).Select(s => new { s.ClassId, s.SubjectId }).ToListAsync(ct);
+            var existing = await timetable.PlacedSubjectsAsync(classIds, ct);
             demands = demands.Select(dm => dm with { Periods = Math.Max(0, dm.Periods - existing.Count(e => e.ClassId == dm.ClassId && e.SubjectId == dm.SubjectId)) }).ToList();
         }
-        var blocked = (await db.Set<StaffUnavailability>().AsNoTracking().Select(u => new { u.StaffId, u.Day, u.Period }).ToListAsync(ct))
-            .Select(u => (u.StaffId, u.Day, u.Period)).ToHashSet();
+        var blocked = (await timetable.BlockedAsync(ct)).ToHashSet();
 
         // each board has its own bell times; teachers are shared, so slots placed for one board count as busy for the next
         var slots = new List<TimetableGenerator.Slot>();
@@ -246,18 +239,18 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
             unplaced.AddRange(part.Unplaced);
         }
 
-        await db.InTransactionAsync(async () =>
+        await unitOfWork.InTransactionAsync(async () =>
         {
             if (replace)
             {
-                db.Set<TimetableSlot>().RemoveRange(await db.Set<TimetableSlot>().Where(s => classIds.Contains(s.ClassId)).ToListAsync(ct));
-                await db.SaveChangesAsync(ct);
+                timetable.RemoveRange(await timetable.FindOfClassesAsync(classIds, ct));
+                await unitOfWork.SaveChangesAsync(ct);
             }
-            db.Set<TimetableSlot>().AddRange(slots.Select(s => new TimetableSlot
+            timetable.AddRange(slots.Select(s => new TimetableSlot
             {
                 ClassId = s.ClassId, Day = s.Day, Period = s.Period, SubjectId = s.SubjectId, StaffId = s.StaffId, RoomId = s.RoomId,
             }));
-            await db.SaveChangesAsync(ct);
+            await unitOfWork.SaveChangesAsync(ct);
             return true;
         }, ct);
 
@@ -279,7 +272,7 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
     {
         var b = new Body(json);
         var classId = b.Truthy("classId") ? b.Int("classId") : null;
-        var owner = classId is { } cid ? await db.Set<SchoolClass>().AsNoTracking().Where(c => c.Id == cid).Select(c => c.Board).FirstOrDefaultAsync(ct) : null;
+        var owner = classId is { } cid ? await timetable.ClassBoardAsync(cid, ct) : null;
         var period = b.Num("period");
         var bell = Bells(await LoadBellsAsync(owner, ct)).FirstOrDefault(p => p.Period == period);
         if (bell is null) throw HttpException.BadRequest("That period is not in the school day. Add it under Period times first");
@@ -294,37 +287,34 @@ public sealed partial class TimetableService(IApplicationDbContext db, IBoardSer
 
         if (staffId is { } sid)
         {
-            if (await db.Set<StaffUnavailability>().AnyAsync(u => u.StaffId == sid && u.Day == day && u.Period == p, ct))
+            if (await timetable.IsUnavailableAsync(sid, day, p, ct))
                 throw HttpException.Conflict("That teacher is marked unavailable in this period");
-            var clash = await db.Set<TimetableSlot>().AsNoTracking().Include(s => s.SchoolClass)
-                .FirstOrDefaultAsync(s => s.StaffId == sid && s.Day == day && s.Period == p && s.ClassId != classId && s.SchoolClass != null, ct);
+            var clash = await timetable.TeacherClashAsync(sid, day, p, classId, ct);
             if (clash is not null)
                 throw HttpException.Conflict($"That teacher already teaches {clash.SchoolClass!.Name}-{clash.SchoolClass.Section} in this period");
         }
         if (roomId is { } rid)
         {
-            var used = await db.Set<TimetableSlot>().AsNoTracking().Include(s => s.SchoolClass)
-                .FirstOrDefaultAsync(s => s.RoomId == rid && s.Day == day && s.Period == p && s.ClassId != classId && s.SchoolClass != null, ct);
+            var used = await timetable.RoomClashAsync(rid, day, p, classId, ct);
             if (used is not null)
                 throw HttpException.Conflict($"That room is already used by {used.SchoolClass!.Name}-{used.SchoolClass.Section} in this period");
         }
-        var slot = await db.Set<TimetableSlot>().FirstOrDefaultAsync(s => s.ClassId == classId && s.Day == day && s.Period == p, ct);
+        var slot = await timetable.FindSlotAsync(classId, day, p, ct);
         if (slot is null)
         {
             slot = new TimetableSlot { ClassId = classId!.Value, Day = day, Period = p };
-            db.Set<TimetableSlot>().Add(slot);
+            timetable.Add(slot);
         }
         slot.SubjectId = subjectId;
         slot.StaffId = staffId;
         slot.RoomId = roomId;
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)
     {
-        var rows = await db.Set<TimetableSlot>().Where(s => s.Id == id).ToListAsync(ct);
-        db.Set<TimetableSlot>().RemoveRange(rows);
-        await db.SaveChangesAsync(ct);
+        if (await timetable.FindAsync(id, ct) is { } row) timetable.Remove(row);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     [GeneratedRegex("^([01][0-9]|2[0-3]):[0-5][0-9]$")]

@@ -5,12 +5,13 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Lib.Net.Http.WebPush;
 using Lib.Net.Http.WebPush.Authentication;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Domain.Entities;
 using WebPushSubscription = Lib.Net.Http.WebPush.PushSubscription;
 using SubscriptionRow = SchoolERP.Domain.Entities.PushSubscription;
@@ -24,7 +25,8 @@ namespace SchoolERP.Infrastructure.Notifications;
 /// subscriptions keep working.
 /// </summary>
 public sealed partial class PushService(
-    IApplicationDbContext db, IConfiguration configuration, IHttpClientFactory httpClients, ILogger<PushService> logger) : IPushService
+    IPushSubscriptionRepository subscriptions, IUserRepository users, ISettingRepository settings, IUnitOfWork unitOfWork,
+    IConfiguration configuration, IHttpClientFactory httpClients, ILogger<PushService> logger) : IPushService
 {
     private const string Key = "push.vapid";
     private const int MaxTitle = 80;
@@ -47,19 +49,19 @@ public sealed partial class PushService(
             var priv = configuration["Vapid:PrivateKey"] ?? configuration["VAPID_PRIVATE_KEY"];
             if (!string.IsNullOrEmpty(pub) && !string.IsNullOrEmpty(priv)) return _keys = new VapidKeys(pub, priv);
 
-            var saved = await db.Set<Setting>().AsNoTracking().FirstOrDefaultAsync(s => s.Key == Key, ct);
+            var saved = await settings.GetByKeyAsync(Key, ct);
             if (saved is not null && JsonNode.Parse(saved.Value) is JsonObject o
                 && Body.AsString(o["publicKey"]) is { } p && Body.AsString(o["privateKey"]) is { } k)
                 return _keys = new VapidKeys(p, k);
 
             var generated = Generate();
-            db.Set<Setting>().Add(new Setting
+            settings.Add(new Setting
             {
                 Key = Key,
                 Value = JsonSerializer.Serialize(new { publicKey = generated.PublicKey, privateKey = generated.PrivateKey }),
                 UpdatedByName = "system",
             });
-            await db.SaveChangesAsync(ct);
+            await unitOfWork.SaveChangesAsync(ct);
             return _keys = generated;
         }
         finally
@@ -108,29 +110,29 @@ public sealed partial class PushService(
         var auth = Body.AsString(keys?["auth"]);
         if (string.IsNullOrEmpty(p256dh) || string.IsNullOrEmpty(auth)) throw HttpException.BadRequest("Invalid subscription");
         // one endpoint belongs to one person: a shared computer signing in as someone else takes the endpoint over
-        var row = await db.Set<SubscriptionRow>().FirstOrDefaultAsync(s => s.Endpoint == endpoint, ct);
+        var row = await subscriptions.FindByEndpointAsync(endpoint, ct);
         if (row is null)
         {
             row = new SubscriptionRow { Endpoint = endpoint };
-            db.Set<SubscriptionRow>().Add(row);
+            subscriptions.Add(row);
         }
         row.UserId = userId;
         row.P256dh = p256dh;
         row.Auth = auth;
         var agent = (userAgent ?? "").Length > 200 ? userAgent![..200] : userAgent;
         row.UserAgent = string.IsNullOrEmpty(agent) ? null : agent;
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     public async Task UnsubscribeAsync(int userId, string? endpoint, CancellationToken ct = default)
     {
-        var rows = await db.Set<SubscriptionRow>().Where(s => s.UserId == userId && s.Endpoint == (endpoint ?? "")).ToListAsync(ct);
-        db.Set<SubscriptionRow>().RemoveRange(rows);
-        await db.SaveChangesAsync(ct);
+        var rows = await subscriptions.ListOfUserAsync(userId, endpoint ?? "", ct);
+        subscriptions.RemoveRange(rows);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     public Task<int> MySubscriptionsAsync(int userId, CancellationToken ct = default) =>
-        db.Set<SubscriptionRow>().CountAsync(s => s.UserId == userId, ct);
+        subscriptions.CountOfUserAsync(userId, ct);
 
     /// <summary>Delivers one message; true when delivered, false when it failed, null when the browser says the endpoint is gone.</summary>
     private static async Task<bool?> DeliverAsync(PushServiceClient client, SubscriptionRow s, string payload, CancellationToken ct)
@@ -160,14 +162,14 @@ public sealed partial class PushService(
             var ids = userIds.Where(id => id is not null and not 0).Select(id => id!.Value).Distinct().ToList();
             if (ids.Count == 0) return;
             var client = await ClientAsync(ct);
-            var subs = await db.Set<SubscriptionRow>().Where(s => ids.Contains(s.UserId)).ToListAsync(ct);
+            var subs = await subscriptions.ListOfUsersAsync(ids, ct);
             var payload = JsonSerializer.Serialize(new { title, body, url = string.IsNullOrEmpty(url) ? "/" : url });
             var results = await Task.WhenAll(subs.Select(s => DeliverAsync(client, s, payload, ct)));
             var gone = subs.Where((_, i) => results[i] is null).ToList();
             if (gone.Count > 0)
             {
-                db.Set<SubscriptionRow>().RemoveRange(gone);
-                await db.SaveChangesAsync(ct);
+                subscriptions.RemoveRange(gone);
+                await unitOfWork.SaveChangesAsync(ct);
             }
         }
         catch (Exception ex)
@@ -176,19 +178,20 @@ public sealed partial class PushService(
         }
     }
 
-    private static IQueryable<User> AudienceOf(IQueryable<User> users, string? audience) => audience switch
+    /// <summary>The roles an audience covers; null for everyone.</summary>
+    private static string[]? RolesOf(string? audience) => audience switch
     {
-        "staff" => users.Where(u => u.Role == "admin" || u.Role == "teacher" || u.Role == "accountant"),
-        "parents" => users.Where(u => u.Role == "parent"),
-        "students" => users.Where(u => u.Role == "student"),
-        "everyone" => users,
+        "staff" => ["admin", "teacher", "accountant"],
+        "parents" => ["parent"],
+        "students" => ["student"],
+        "everyone" => null,
         _ => throw HttpException.BadRequest("Choose who to notify"),
     };
 
     public async Task<object> AudienceSizeAsync(string? audience, CancellationToken ct = default)
     {
-        var ids = await AudienceOf(db.Set<User>(), audience).Select(u => u.Id).ToListAsync(ct);
-        var devices = await db.Set<SubscriptionRow>().CountAsync(s => ids.Contains(s.UserId), ct);
+        var ids = await users.IdsWithRolesAsync(RolesOf(audience), ct);
+        var devices = await subscriptions.CountOfUsersAsync(ids, ct);
         return new { people = ids.Count, devices };
     }
 
@@ -196,7 +199,7 @@ public sealed partial class PushService(
     {
         var b = new Body(json);
         var audience = b.Str("audience");
-        var users = AudienceOf(db.Set<User>(), audience); // validates the audience first
+        var roles = RolesOf(audience); // validates the audience first
         var heading = b.Trimmed("title");
         var text = b.Trimmed("body");
         if (heading == "" || text == "") throw HttpException.BadRequest("A title and a message are required");
@@ -206,8 +209,8 @@ public sealed partial class PushService(
         if (b.Truthy("url") && !url!.StartsWith('/')) throw HttpException.BadRequest("The link must be a page of this site, starting with /");
         var client = await ClientAsync(ct);
 
-        var ids = await users.Select(u => u.Id).ToListAsync(ct);
-        var subs = await db.Set<SubscriptionRow>().Where(s => ids.Contains(s.UserId)).ToListAsync(ct);
+        var ids = await users.IdsWithRolesAsync(roles, ct);
+        var subs = await subscriptions.ListOfUsersAsync(ids, ct);
         var payload = JsonSerializer.Serialize(new { title = heading, body = text, url = b.Truthy("url") ? url : "/" });
         int delivered = 0, failed = 0, removed = 0;
         foreach (var chunk in subs.Chunk(Batch))
@@ -220,12 +223,12 @@ public sealed partial class PushService(
                     case true: delivered++; break;
                     case false: failed++; break;
                     default:
-                        db.Set<SubscriptionRow>().Remove(chunk[i]);
+                        subscriptions.Remove(chunk[i]);
                         removed++;
                         break;
                 }
             }
-            await db.SaveChangesAsync(ct);
+            await unitOfWork.SaveChangesAsync(ct);
         }
         return new { devices = subs.Count, delivered, failed, removed };
     }

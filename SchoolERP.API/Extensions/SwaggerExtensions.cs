@@ -11,27 +11,40 @@ public static class SwaggerExtensions
     private const string Scheme = "Bearer";
 
     public static IServiceCollection AddSchoolErpOpenApi(this IServiceCollection services) =>
-        services.AddOpenApi(options => options.AddDocumentTransformer((document, _, _) =>
+        services.AddOpenApi(options =>
         {
-            document.Info = new OpenApiInfo
+            options.AddSchemaTransformer((schema, context, _) =>
             {
-                Title = "SchoolERP API",
-                Version = "v1",
-                Description = "School ERP API. Sign in with POST /api/auth/login, then click Authorize and paste the token.",
-            };
-            document.Components ??= new OpenApiComponents();
-            document.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();
-            document.Components.SecuritySchemes[Scheme] = new OpenApiSecurityScheme
+                if (context.JsonTypeInfo.Type == typeof(System.Text.Json.Nodes.JsonObject))
+                {
+                    schema.Type = JsonSchemaType.Object;
+                    schema.Description = "JSON request body. See the endpoint documentation for accepted fields.";
+                    schema.Example = System.Text.Json.Nodes.JsonNode.Parse("{}");
+                }
+                return Task.CompletedTask;
+            });
+            options.AddDocumentTransformer((document, _, _) =>
             {
-                Type = SecuritySchemeType.Http,
-                Scheme = "bearer",
-                BearerFormat = "JWT",
-                Description = "The token from POST /api/auth/login (valid JwtSettings:ExpiryMinutes).",
-            };
-            document.Security ??= [];
-            document.Security.Add(new OpenApiSecurityRequirement { [new OpenApiSecuritySchemeReference(Scheme, document)] = [] });
-            return Task.CompletedTask;
-        }));
+                document.Info = new OpenApiInfo
+                {
+                    Title = "SchoolERP API",
+                    Version = "v1",
+                    Description = "School ERP API. Sign in with POST /api/auth/login, then click Authorize and paste the token.",
+                };
+                document.Components ??= new OpenApiComponents();
+                document.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();
+                document.Components.SecuritySchemes[Scheme] = new OpenApiSecurityScheme
+                {
+                    Type = SecuritySchemeType.Http,
+                    Scheme = "bearer",
+                    BearerFormat = "JWT",
+                    Description = "The token from POST /api/auth/login (valid JwtSettings:ExpiryMinutes).",
+                };
+                document.Security ??= [];
+                document.Security.Add(new OpenApiSecurityRequirement { [new OpenApiSecuritySchemeReference(Scheme, document)] = [] });
+                return Task.CompletedTask;
+            });
+        });
 
     public static WebApplication UseSchoolErpSwagger(this WebApplication app)
     {
@@ -43,6 +56,8 @@ public static class SwaggerExtensions
             options.DocumentTitle = "SchoolERP API";
             options.EnablePersistAuthorization(); // keep the token across page reloads
             options.DisplayRequestDuration();
+            options.DocExpansion(Swashbuckle.AspNetCore.SwaggerUI.DocExpansion.List);
+            options.DefaultModelsExpandDepth(2);
         });
         return app;
     }

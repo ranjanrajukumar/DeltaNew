@@ -1,17 +1,20 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
-using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
 using AttendanceMark = SchoolERP.Domain.Entities.Attendance;
 
 namespace SchoolERP.Application.Modules.Attendance;
 
 /// <summary>Daily student attendance (the Node app's academics/attendance.service.js).</summary>
-public sealed partial class AttendanceService(IApplicationDbContext db, TeacherScope scope)
+public sealed partial class AttendanceService(
+    IAttendanceRepository marks, IAttendanceQueryRepository queries, IStudentLeaveRepository studentLeaves,
+    IUnitOfWork unitOfWork, ITeacherScope scope) : IAttendanceService
 {
     public static readonly string[] Statuses = ["present", "absent", "late"];
 
@@ -20,37 +23,27 @@ public sealed partial class AttendanceService(IApplicationDbContext db, TeacherS
 
     /// <summary>Students with an approved leave covering <paramref name="date"/>.</summary>
     public async Task<HashSet<int>> StudentsOnLeaveAsync(DateOnly date, CancellationToken ct = default) =>
-        (await db.Set<StudentLeave>().Where(l => l.Status == "approved" && l.FromDate <= date && l.ToDate >= date)
-            .Select(l => l.StudentId).ToListAsync(ct)).ToHashSet();
+        (await studentLeaves.ApprovedStudentIdsOnAsync(date, ct)).ToHashSet();
 
     /// <summary>Active students with their status for the day (null when unmarked); onApprovedLeave says an absence is excused.</summary>
     public async Task<List<object>> RosterAsync(DateOnly date, int? classId, CancellationToken ct = default)
     {
-        var students = await db.Set<Student>().AsNoTracking().Include(s => s.SchoolClass)
-            .Where(s => s.Status == "active" && (classId == null || s.ClassId == classId))
-            .OrderBy(s => s.FirstName)
-            .Select(s => new
-            {
-                Student = s,
-                Mark = db.Set<AttendanceMark>().Where(a => a.StudentId == s.Id && a.Date == date)
-                    .Select(a => new { a.Status, a.ArrivalTime, a.Note, a.SavedAt }).FirstOrDefault(),
-            })
-            .ToListAsync(ct);
+        var students = await queries.RosterAsync(date, classId, ct);
         var onLeave = await StudentsOnLeaveAsync(date, ct);
         return students.Select(x => (object)new
         {
-            studentId = x.Student.Id,
-            admissionNo = x.Student.AdmissionNo,
-            firstName = x.Student.FirstName,
-            lastName = x.Student.LastName,
-            status = x.Mark?.Status,
-            arrivalTime = x.Mark?.ArrivalTime,
-            note = x.Mark?.Note,
-            savedAt = x.Mark?.SavedAt,
-            classId = x.Student.ClassId,
-            className = x.Student.SchoolClass?.Name,
-            section = x.Student.SchoolClass?.Section,
-            onApprovedLeave = onLeave.Contains(x.Student.Id),
+            studentId = x.StudentId,
+            admissionNo = x.AdmissionNo,
+            firstName = x.FirstName,
+            lastName = x.LastName,
+            status = x.Status,
+            arrivalTime = x.ArrivalTime,
+            note = x.Note,
+            savedAt = x.SavedAt,
+            classId = x.ClassId,
+            className = x.ClassName,
+            section = x.Section,
+            onApprovedLeave = onLeave.Contains(x.StudentId),
         }).ToList();
     }
 
@@ -87,16 +80,16 @@ public sealed partial class AttendanceService(IApplicationDbContext db, TeacherS
             if (r.Note is { Length: > 120 }) throw HttpException.BadRequest("A note must be 120 characters or fewer");
         }
         var ids = records.Select(r => r.StudentId).Distinct().ToList();
-        if (await db.Set<Student>().CountAsync(s => ids.Contains(s.Id), ct) != ids.Count)
+        if (await marks.CountStudentsAsync(ids, ct) != ids.Count)
             throw HttpException.BadRequest("Every record needs an existing student");
 
-        var existing = await db.Set<AttendanceMark>().Where(a => a.Date == date && ids.Contains(a.StudentId)).ToListAsync(ct);
+        var existing = await marks.FindForDateAsync(date, ids, ct);
         var before = existing.GroupBy(a => a.StudentId).ToDictionary(g => g.Key, g => g.Last());
         var changes = records.Where(r => before.TryGetValue(r.StudentId, out var b) && b.Status != r.Status).ToList();
         if (changes.Count > 0 && date < Clock.Today() && string.IsNullOrWhiteSpace(reason))
             throw HttpException.BadRequest($"A reason is required to change past attendance ({changes.Count} mark(s) would change)");
 
-        await db.InTransactionAsync(async () =>
+        await unitOfWork.InTransactionAsync(async () =>
         {
             var savedAt = DateTime.UtcNow;
             var oldStatus = before.ToDictionary(kv => kv.Key, kv => kv.Value.Status);
@@ -105,7 +98,7 @@ public sealed partial class AttendanceService(IApplicationDbContext db, TeacherS
                 if (!before.TryGetValue(r.StudentId, out var mark))
                 {
                     mark = new AttendanceMark { StudentId = r.StudentId, Date = date };
-                    db.Set<AttendanceMark>().Add(mark);
+                    marks.Add(mark);
                     before[r.StudentId] = mark;
                 }
                 mark.Status = r.Status!;
@@ -114,7 +107,7 @@ public sealed partial class AttendanceService(IApplicationDbContext db, TeacherS
                 mark.SavedAt = savedAt;
             }
             foreach (var c in changes)
-                db.Set<AttendanceCorrection>().Add(new AttendanceCorrection
+                marks.AddCorrection(new AttendanceCorrection
                 {
                     StudentId = c.StudentId,
                     Date = date,
@@ -124,7 +117,7 @@ public sealed partial class AttendanceService(IApplicationDbContext db, TeacherS
                     CorrectedBy = userId,
                     CorrectedByName = userName,
                 });
-            await db.SaveChangesAsync(ct);
+            await unitOfWork.SaveChangesAsync(ct);
             return true;
         }, ct);
         return (records.Count, changes.Count);
@@ -133,17 +126,14 @@ public sealed partial class AttendanceService(IApplicationDbContext db, TeacherS
     /// <summary>The correction log, newest first (at most 300). Filters: studentId, from, to.</summary>
     public async Task<List<object>> CorrectionsAsync(int? studentId, DateOnly? from, DateOnly? to, CancellationToken ct = default)
     {
-        var rows = await db.Set<AttendanceCorrection>().AsNoTracking().Include(c => c.Student)
-            .Where(c => c.Student != null && (studentId == null || c.StudentId == studentId)
-                && (from == null || c.Date >= from) && (to == null || c.Date <= to))
-            .OrderByDescending(c => c.Id).Take(300).ToListAsync(ct);
+        var rows = await queries.CorrectionsAsync(studentId, from, to, ct);
         return rows.Select(c => (object)new
         {
             id = c.Id,
             date = c.Date,
             studentId = c.StudentId,
-            studentName = $"{c.Student!.FirstName} {c.Student.LastName}",
-            admissionNo = c.Student.AdmissionNo,
+            studentName = $"{c.FirstName} {c.LastName}",
+            admissionNo = c.AdmissionNo,
             oldStatus = c.OldStatus,
             newStatus = c.NewStatus,
             reason = c.Reason,

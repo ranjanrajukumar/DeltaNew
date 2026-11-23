@@ -1,5 +1,6 @@
 using SchoolERP.API.Extensions;
 using SchoolERP.Application.Common.Helpers;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Application.Modules.Authentication;
 
 namespace SchoolERP.API.Middleware;
@@ -12,7 +13,7 @@ namespace SchoolERP.API.Middleware;
 /// </summary>
 public sealed class UserContextMiddleware(RequestDelegate next)
 {
-    public async Task InvokeAsync(HttpContext context, RequestAuthenticator authenticator)
+    public async Task InvokeAsync(HttpContext context, IRequestAuthenticator authenticator)
     {
         var path = context.Request.ApiPath();
         if (!path.StartsWith("/api/", StringComparison.Ordinal) || ApiRequestExtensions.OpenAreas.Contains(ApiRequestExtensions.ApiArea(path)))

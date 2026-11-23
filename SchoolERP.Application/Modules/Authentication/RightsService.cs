@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
-using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
 
 namespace SchoolERP.Application.Modules.Authentication;
@@ -9,7 +9,7 @@ namespace SchoolERP.Application.Modules.Authentication;
 /// Role rights (the Node app's platform/rights.service.js): actions an admin switched off for a role in a module
 /// (view, create, edit, delete, approve, export). None are off by default, and admin is never limited.
 /// </summary>
-public sealed partial class RightsService(IApplicationDbContext db)
+public sealed partial class RightsService(IRoleRightRepository roleRights) : IRightsService
 {
     public static readonly string[] Actions = ["view", "create", "edit", "delete", "approve", "export"];
 
@@ -35,7 +35,7 @@ public sealed partial class RightsService(IApplicationDbContext db)
         await Lock.WaitAsync(ct);
         try
         {
-            return _cache ??= (await db.Set<RoleRight>().AsNoTracking().ToListAsync(ct))
+            return _cache ??= (await roleRights.AllAsync(ct))
                 .GroupBy(r => $"{r.Role}|{r.Module}")
                 .ToDictionary(g => g.Key, g => g.First());
         }

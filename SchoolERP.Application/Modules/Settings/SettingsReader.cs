@@ -1,29 +1,22 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
 
 namespace SchoolERP.Application.Modules.Settings;
-
-/// <summary>
-/// One school-wide setting: its group, label, type (text | integer | number), limits and default. A text setting may list
-/// options (it must then be one of them, or blank when not required), a pattern (checked when something is entered) and required.
-/// </summary>
-public sealed record SettingDefinition(
-    string Key, string Group, string Label, string Type, Func<JsonNode?> Default,
-    double? Min = null, double? Max = null, string[]? Options = null, bool Required = false,
-    Regex? Pattern = null, string? PatternHelp = null, string? Help = null);
 
 /// <summary>
 /// School-wide settings (the Node app's settings/settings.service.js): a saved override from the settings table (its value
 /// is JSON text), else the setting's default. The default is what the system did before settings existed, so nothing changes
 /// until an admin edits a value. Overrides are read once and kept until a save or reset.
 /// </summary>
-public sealed partial class SettingsReader(IApplicationDbContext db, ICurrentUser user)
+public sealed partial class SettingsReader(ISettingRepository settings, IUnitOfWork unitOfWork, ICurrentUser user) : ISettingsReader
 {
     private static SettingDefinition Text(string key, string group, string label, int max, string def,
         string[]? options = null, bool required = false, Regex? pattern = null, string? patternHelp = null, string? help = null) =>
@@ -188,15 +181,15 @@ public sealed partial class SettingsReader(IApplicationDbContext db, ICurrentUse
         }).ToList();
         foreach (var (key, value) in clean)
         {
-            var row = await db.Set<Setting>().FirstOrDefaultAsync(s => s.Key == key, ct);
+            var row = await settings.FindByKeyAsync(key, ct);
             if (row is null)
             {
                 row = new Setting { Key = key };
-                db.Set<Setting>().Add(row);
+                settings.Add(row);
             }
             row.Value = value.ToJsonString();
             row.UpdatedByName = user.Name;
-            await db.SaveChangesAsync(ct);
+            await unitOfWork.SaveChangesAsync(ct);
         }
         Invalidate();
     }
@@ -205,9 +198,9 @@ public sealed partial class SettingsReader(IApplicationDbContext db, ICurrentUse
     public async Task ResetAsync(string key, CancellationToken ct = default)
     {
         if (!ByKey.ContainsKey(key)) throw HttpException.BadRequest($"Unknown setting \"{key}\"");
-        var rows = await db.Set<Setting>().Where(s => s.Key == key).ToListAsync(ct);
-        db.Set<Setting>().RemoveRange(rows);
-        await db.SaveChangesAsync(ct);
+        var rows = await settings.ListByKeyAsync(key, ct);
+        settings.RemoveRange(rows);
+        await unitOfWork.SaveChangesAsync(ct);
         Invalidate();
     }
 
@@ -222,8 +215,7 @@ public sealed partial class SettingsReader(IApplicationDbContext db, ICurrentUse
     public sealed record SchoolProfile(string Name, string Address, string Phone, string Email, string Principal);
 
     /// <summary>A raw setting row's value (JSON text), also for keys outside the definitions (e.g. push.vapid).</summary>
-    public async Task<string?> RawAsync(string key, CancellationToken ct = default) =>
-        await db.Set<Setting>().AsNoTracking().Where(s => s.Key == key).Select(s => s.Value).FirstOrDefaultAsync(ct);
+    public Task<string?> RawAsync(string key, CancellationToken ct = default) => settings.RawValueAsync(key, ct);
 
     private async Task<Dictionary<string, JsonNode?>> OverridesAsync(CancellationToken ct)
     {
@@ -232,7 +224,7 @@ public sealed partial class SettingsReader(IApplicationDbContext db, ICurrentUse
         try
         {
             if (_cache is { } again) return again;
-            var rows = await db.Set<Setting>().AsNoTracking().ToListAsync(ct);
+            var rows = await settings.AllAsync(ct);
             var map = new Dictionary<string, JsonNode?>();
             foreach (var row in rows)
             {

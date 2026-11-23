@@ -1,19 +1,22 @@
 using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
 using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Application.Modules.Messaging;
 using SchoolERP.Application.Modules.Settings;
 using SchoolERP.Domain.Entities;
-using AttendanceMark = SchoolERP.Domain.Entities.Attendance;
 
 namespace SchoolERP.Application.Modules.Attendance;
 
 /// <summary>Period-wise attendance and parent absence alerts (the Node app's attendance/attendanceExtras.routes.js and autoAbsence.service.js).</summary>
 public sealed class AttendanceExtrasService(
-    IApplicationDbContext db, AttendanceService attendance, StudentLeaveService leaves, MessagingService messaging,
-    SettingsReader settings, IPushService push)
+    IPeriodAttendanceRepository periodMarks, IAttendanceRepository marks, IAbsenceAlertRepository alertRows,
+    IAttendanceQueryRepository queries, IUnitOfWork unitOfWork,
+    IAttendanceService attendance, IStudentLeaveService leaves, IMessagingService messaging,
+    ISettingsReader settings, IPushService push) : IAttendanceExtrasService
 {
     public static readonly string[] Methods = ["call", "sms", "whatsapp", "in_person", "portal"];
 
@@ -25,14 +28,12 @@ public sealed class AttendanceExtrasService(
     /// <summary>The roster for one period; the subject comes from the timetable when it has one.</summary>
     public async Task<object> PeriodRosterAsync(int classId, DateOnly date, int period, CancellationToken ct = default)
     {
-        var students = await db.Set<Student>().AsNoTracking().Where(s => s.ClassId == classId && s.Status == "active").OrderBy(s => s.FirstName).ToListAsync(ct);
-        var marks = await db.Set<PeriodAttendance>().AsNoTracking().Where(p => p.ClassId == classId && p.Date == date && p.Period == period)
-            .Select(p => new { p.StudentId, p.Status }).ToListAsync(ct);
+        var students = await periodMarks.ActiveStudentsOfClassAsync(classId, ct);
+        var periodRows = (await periodMarks.ListAsync(classId, date, period, ct)).Select(p => new { p.StudentId, p.Status }).ToList();
         var day = DayOfWeekNumber(date);
-        var slot = await db.Set<TimetableSlot>().AsNoTracking().Include(s => s.Subject)
-            .Where(s => s.ClassId == classId && s.Day == day && s.Period == period && s.Subject != null).FirstOrDefaultAsync(ct);
+        var slot = await periodMarks.SlotWithSubjectAsync(classId, day, period, ct);
         var onLeave = await attendance.StudentsOnLeaveAsync(date, ct);
-        var byStudent = marks.GroupBy(m => m.StudentId).ToDictionary(g => g.Key, g => g.Last().Status);
+        var byStudent = periodRows.GroupBy(m => m.StudentId).ToDictionary(g => g.Key, g => g.Last().Status);
         return new
         {
             subjectId = slot?.SubjectId,
@@ -54,30 +55,30 @@ public sealed class AttendanceExtrasService(
         var b = new Body(json);
         if (!b.Truthy("classId") || !b.Truthy("date") || !b.Truthy("period")) throw HttpException.BadRequest("classId, date and period are required");
         var classId = b.Int("classId");
-        if (classId is null || !await db.Set<SchoolClass>().AnyAsync(c => c.Id == classId, ct)) throw HttpException.NotFound("Class not found");
+        if (classId is null || !await periodMarks.ClassExistsAsync(classId.Value, ct)) throw HttpException.NotFound("Class not found");
         var date = b.Date("date") ?? throw HttpException.BadRequest("Invalid value in the request");
         var period = b.Int("period") ?? throw HttpException.BadRequest("Invalid value in the request");
         int? subjectId = b.Truthy("subjectId") ? b.Int("subjectId") : null;
         var records = (json?["records"] as JsonArray ?? []).Select(n => new Body(n as JsonObject))
             .Select(r => (StudentId: r.Int("studentId") ?? 0, Status: r.Str("status"))).ToList();
 
-        var members = (await db.Set<Student>().Where(s => s.ClassId == classId).Select(s => s.Id).ToListAsync(ct)).ToHashSet();
+        var members = (await periodMarks.StudentIdsOfClassAsync(classId.Value, ct)).ToHashSet();
         if (records.Any(r => !members.Contains(r.StudentId))) throw HttpException.BadRequest("Every student must belong to the chosen class");
 
-        await db.InTransactionAsync(async () =>
+        await unitOfWork.InTransactionAsync(async () =>
         {
             foreach (var (studentId, status) in records)
             {
-                var row = await db.Set<PeriodAttendance>().FirstOrDefaultAsync(p => p.StudentId == studentId && p.Date == date && p.Period == period, ct);
+                var row = await periodMarks.FindAsync(studentId, date, period, ct);
                 if (row is null)
                 {
                     row = new PeriodAttendance { StudentId = studentId, Date = date, Period = period };
-                    db.Set<PeriodAttendance>().Add(row);
+                    periodMarks.Add(row);
                 }
                 row.ClassId = classId.Value;
                 row.SubjectId = subjectId;
                 row.Status = status!;
-                await db.SaveChangesAsync(ct);
+                await unitOfWork.SaveChangesAsync(ct);
             }
             return true;
         }, ct);
@@ -87,17 +88,11 @@ public sealed class AttendanceExtrasService(
     /// <summary>Periods missed per student between two dates, worst first.</summary>
     public async Task<List<object>> PeriodSummaryAsync(int classId, DateOnly from, DateOnly to, CancellationToken ct = default)
     {
-        var students = await db.Set<Student>().AsNoTracking().Where(s => s.ClassId == classId && s.Status == "active")
-            .Select(s => new
-            {
-                s.Id, s.AdmissionNo, s.FirstName, s.LastName,
-                Marks = db.Set<PeriodAttendance>().Where(p => p.StudentId == s.Id && p.Date >= from && p.Date <= to).Select(p => p.Status).ToList(),
-            })
-            .ToListAsync(ct);
+        var students = await queries.PeriodSummaryAsync(classId, from, to, ct);
         return students.Select(s =>
         {
-            var absent = s.Marks.Count(m => m == "absent");
-            var total = s.Marks.Count;
+            var absent = s.Absent;
+            var total = s.Periods;
             return new
             {
                 studentId = s.Id,
@@ -105,7 +100,7 @@ public sealed class AttendanceExtrasService(
                 name = $"{s.FirstName} {s.LastName}",
                 periods = total,
                 absent,
-                late = s.Marks.Count(m => m == "late"),
+                late = s.Late,
                 percentage = total > 0 ? Math.Floor((total - absent) * 1000.0 / total + 0.5) / 10 : (double?)null,
             };
         }).OrderByDescending(r => r.absent).Cast<object>().ToList();
@@ -116,15 +111,10 @@ public sealed class AttendanceExtrasService(
     /// <summary>Students marked absent on a day, with guardian contact and whether anyone was told.</summary>
     public async Task<List<object>> AlertsAsync(DateOnly date, int? classId, CancellationToken ct = default)
     {
-        var absent = await db.Set<AttendanceMark>().AsNoTracking()
-            .Include(a => a.Student).ThenInclude(s => s!.SchoolClass)
-            .Where(a => a.Date == date && a.Status == "absent" && a.Student != null && a.Student.Status == "active"
-                && (classId == null || a.Student.ClassId == classId))
-            .ToListAsync(ct);
+        var absent = await marks.AbsentWithStudentsAsync(date, classId, ct);
         var onLeave = await attendance.StudentsOnLeaveAsync(date, ct);
         var ids = absent.Select(a => a.StudentId).ToList();
-        var alerts = await db.Set<AbsenceAlert>().AsNoTracking().Where(a => a.Date == date && ids.Contains(a.StudentId))
-            .OrderByDescending(a => a.Id).ToListAsync(ct);
+        var alerts = await alertRows.ForStudentsAsync(date, ids, ct);
         var byStudent = alerts.GroupBy(a => a.StudentId).ToDictionary(g => g.Key, g => g.ToList());
         return absent.Select(a => (object)new
         {
@@ -147,15 +137,15 @@ public sealed class AttendanceExtrasService(
         if (method is null || !Methods.Contains(method)) throw HttpException.BadRequest($"Method must be one of {string.Join(", ", Methods)}");
         var date = b.Truthy("date") ? b.Date("date") ?? throw HttpException.BadRequest("Invalid value in the request") : Clock.Today();
         var studentId = b.Int("studentId");
-        if (studentId is null || !await db.Set<AttendanceMark>().AnyAsync(a => a.StudentId == studentId && a.Date == date && a.Status == "absent", ct))
+        if (studentId is null || !await marks.IsAbsentAsync(studentId.Value, date, ct))
             throw HttpException.BadRequest("That student is not marked absent on this date");
         var row = new AbsenceAlert
         {
             StudentId = studentId.Value, Date = date, Method = method, Note = b.Truthy("note") ? b.Str("note") : null,
             NotifiedBy = userId, NotifiedByName = userName,
         };
-        db.Set<AbsenceAlert>().Add(row);
-        await db.SaveChangesAsync(ct);
+        alertRows.Add(row);
+        await unitOfWork.SaveChangesAsync(ct);
         return row.Id;
     }
 
@@ -189,16 +179,13 @@ public sealed class AttendanceExtrasService(
                 Handled.Clear();
                 _handledDay = Clock.TodayText();
             }
-            var marks = await db.Set<AttendanceMark>().AsNoTracking()
-                .Where(a => a.Date == date && a.Status == "absent" && a.Student != null && a.Student.Status == "active")
-                .Select(a => new { a.StudentId, a.Student!.FirstName, a.Student.LastName })
-                .ToListAsync(ct);
+            var absentees = await marks.AbsentStudentsAsync(date, ct);
             var onLeave = await attendance.StudentsOnLeaveAsync(date, ct);
-            var ids = marks.Select(m => m.StudentId).ToList();
-            var told = (await db.Set<AbsenceAlert>().Where(a => a.Date == date && ids.Contains(a.StudentId)).Select(a => a.StudentId).ToListAsync(ct)).ToHashSet();
+            var ids = absentees.Select(m => m.StudentId).ToList();
+            var told = (await alertRows.AlertedStudentIdsAsync(date, ids, ct)).ToHashSet();
 
             int notified = 0, texted = 0;
-            foreach (var m in marks)
+            foreach (var m in absentees)
             {
                 if (onLeave.Contains(m.StudentId) || told.Contains(m.StudentId) || Handled.Contains(m.StudentId)) continue;
                 Handled.Add(m.StudentId);
@@ -207,12 +194,12 @@ public sealed class AttendanceExtrasService(
                 {
                     await push.NotifyUsersAsync(family, "Absence alert",
                         $"{m.FirstName} {m.LastName} was marked absent today. Please contact the school if this is unexpected.", "/portal?tab=Attendance", ct);
-                    db.Set<AbsenceAlert>().Add(new AbsenceAlert
+                    alertRows.Add(new AbsenceAlert
                     {
                         StudentId = m.StudentId, Date = date, Method = "portal", Note = "Automatic push notification",
                         NotifiedBy = null, NotifiedByName = MessagingService.Sender.System.Name,
                     });
-                    await db.SaveChangesAsync(ct);
+                    await unitOfWork.SaveChangesAsync(ct);
                     notified++;
                 }
                 if (status.Sms)
@@ -228,7 +215,7 @@ public sealed class AttendanceExtrasService(
                     }
                 }
             }
-            return new { ran = true, absent = marks.Count, notified, texted };
+            return new { ran = true, absent = absentees.Count, notified, texted };
         }
         finally
         {

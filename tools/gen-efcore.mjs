@@ -1,4 +1,4 @@
-﻿// Generates EF Core entities, configurations and metadata from schema.json (dumped from the Node app's Sequelize models).
+// Generates EF Core entities, configurations and metadata from schema.json (dumped from the Node app's Sequelize models).
 // Usage: node gen-efcore.mjs <schema.json> <solution-dir>
 import fs from 'node:fs';
 import path from 'node:path';
@@ -406,7 +406,7 @@ function dbSetsFile() {
   L.push('');
   L.push('namespace SchoolERP.Infrastructure.Persistence;');
   L.push('');
-  L.push('public partial class SchoolErpDbContext');
+  L.push('public partial class ApplicationDbContext');
   L.push('{');
   for (const m of models) L.push(`    public DbSet<${m.name}> ${m.name}Set => Set<${m.name}>();`);
   L.push('}');
@@ -421,10 +421,10 @@ const write = (rel, content) => {
 };
 for (const m of models) {
   write(`SchoolERP.Domain/Entities/${m.folder}/${m.name}.cs`, entityFile(m));
-  write(`SchoolERP.Infrastructure/Persistence/Configurations/${m.folder}/${m.name}Configuration.cs`, configFile(m));
+  write(`SchoolERP.Infrastructure/Persistence/EF/Configurations/${m.folder}/${m.name}Configuration.cs`, configFile(m));
 }
-write('SchoolERP.Infrastructure/Persistence/EntityMetadata.g.cs', metadataFile());
-write('SchoolERP.Infrastructure/Persistence/SchoolErpDbContext.DbSets.g.cs', dbSetsFile());
+write('SchoolERP.Infrastructure/Persistence/EF/EntityMetadata.g.cs', metadataFile());
+write('SchoolERP.Infrastructure/Persistence/EF/ApplicationDbContext.DbSets.g.cs', dbSetsFile());
 console.log(`entities: ${models.length}`);
 const folders = {};
 for (const m of models) folders[m.folder] = (folders[m.folder] || 0) + 1;

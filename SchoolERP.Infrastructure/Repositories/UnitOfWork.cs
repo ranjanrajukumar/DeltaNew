@@ -4,7 +4,7 @@ using SchoolERP.Infrastructure.Persistence;
 namespace SchoolERP.Infrastructure.Repositories;
 
 /// <summary>The request's DbContext as the save and transaction boundary.</summary>
-public sealed class UnitOfWork(SchoolErpDbContext db) : IUnitOfWork
+public sealed class UnitOfWork(ApplicationDbContext db) : IUnitOfWork
 {
     public Task<int> SaveChangesAsync(CancellationToken ct = default) => db.SaveChangesAsync(ct);
 

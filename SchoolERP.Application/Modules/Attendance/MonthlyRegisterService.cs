@@ -1,17 +1,17 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
-using SchoolERP.Application.Common.Interfaces;
-using SchoolERP.Domain.Entities;
-using AttendanceMark = SchoolERP.Domain.Entities.Attendance;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 
 namespace SchoolERP.Application.Modules.Attendance;
 
 /// <summary>The monthly attendance register for students and staff (the Node app's attendance/monthly.service.js).</summary>
-public sealed partial class MonthlyRegisterService(IApplicationDbContext db, AttendanceService attendance)
+public sealed partial class MonthlyRegisterService(
+    IAttendanceRepository marks, IStudentLeaveRepository studentLeaves, ILeaveTypeRepository leaveTypes, IAttendanceService attendance)
+    : IMonthlyRegisterService
 {
     public sealed record Range(int Year, int Month, int Days, DateOnly From, DateOnly To, string Text);
 
@@ -111,10 +111,7 @@ public sealed partial class MonthlyRegisterService(IApplicationDbContext db, Att
         for (var d = 1; d <= range.Days; d++)
             if (new DateOnly(range.Year, range.Month, d).DayOfWeek == DayOfWeek.Sunday)
                 output[d] = new JsonObject { ["code"] = "W", ["label"] = "Weekly off" };
-        var events = await db.Set<CalendarEvent>().AsNoTracking()
-            .Where(e => e.Type == "holiday" && (e.Audience == "all" || e.Audience == audience) && e.StartDate <= range.To && e.EndDate >= range.From)
-            .Select(e => new { e.Title, e.StartDate, e.EndDate })
-            .ToListAsync(ct);
+        var events = await marks.HolidaysAsync(range.From, range.To, audience, ct);
         foreach (var e in events)
             for (var d = 1; d <= range.Days; d++)
             {
@@ -125,23 +122,19 @@ public sealed partial class MonthlyRegisterService(IApplicationDbContext db, Att
     }
 
     public async Task<Dictionary<int, string>> TypeNamesAsync(CancellationToken ct = default) =>
-        await db.Set<LeaveType>().AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.Name, ct);
+        await leaveTypes.NamesAsync(ct);
 
     public async Task<JsonObject> StudentMonthlyAsync(string? month, int? classId, CancellationToken ct = default)
     {
         var range = Bounds(month);
-        var students = await db.Set<Student>().AsNoTracking().Include(s => s.SchoolClass)
-            .Where(s => s.Status == "active" && (classId == null || s.ClassId == classId))
-            .OrderBy(s => s.FirstName).ToListAsync(ct);
+        var students = await marks.ActiveStudentsWithClassAsync(classId, ct);
         var ids = students.Select(s => s.Id).ToList();
-        var marks = ids.Count == 0 ? [] : await db.Set<AttendanceMark>().AsNoTracking()
-            .Where(a => ids.Contains(a.StudentId) && a.Date >= range.From && a.Date <= range.To)
+        var dayMarks = ids.Count == 0 ? [] : (await marks.ListBetweenAsync(ids, range.From, range.To, ct))
             .Select(a => new DayMark(a.StudentId, a.Date, a.Status, a.ArrivalTime, a.OutTime, a.Note))
-            .ToListAsync(ct);
-        var leaves = ids.Count == 0 ? [] : await db.Set<StudentLeave>().AsNoTracking()
-            .Where(l => ids.Contains(l.StudentId) && l.Status == "approved" && l.FromDate <= range.To && l.ToDate >= range.From)
+            .ToList();
+        var leaves = ids.Count == 0 ? [] : (await studentLeaves.ApprovedBetweenAsync(ids, range.From, range.To, ct))
             .Select(l => new LeaveDay(l.StudentId, l.LeaveTypeId, l.FromDate, l.ToDate, l.DayPart))
-            .ToListAsync(ct);
+            .ToList();
         var register = Register(
             students.Select(s => new JsonObject
             {
@@ -150,7 +143,7 @@ public sealed partial class MonthlyRegisterService(IApplicationDbContext db, Att
                 ["name"] = $"{s.FirstName} {s.LastName}",
                 ["className"] = s.SchoolClass is { } c ? $"{c.Name}-{c.Section}" : null,
             }),
-            marks, LeaveDays(leaves, range, await TypeNamesAsync(ct)), range);
+            dayMarks, LeaveDays(leaves, range, await TypeNamesAsync(ct)), range);
         register["offs"] = await OffDaysAsync(range, "parents", ct);
         return register;
     }
@@ -195,14 +188,14 @@ public sealed partial class MonthlyRegisterService(IApplicationDbContext db, Att
             var date = DateOnly.ParseExact(dateText, "yyyy-MM-dd", CultureInfo.InvariantCulture);
             var ids = list.Select(c => c.Id).ToList();
             // changing a status must not wipe the arrival time or note already on the mark
-            var existing = (await db.Set<AttendanceMark>().AsNoTracking().Where(a => a.Date == date && ids.Contains(a.StudentId))
-                .Select(a => new { a.StudentId, a.ArrivalTime, a.Note }).ToListAsync(ct))
+            var existing = (await marks.ListForDateAsync(date, ids, ct))
+                .Select(a => new { a.StudentId, a.ArrivalTime, a.Note })
                 .GroupBy(a => a.StudentId).ToDictionary(g => g.Key, g => g.Last());
-            var marks = list.Select(c => new AttendanceService.Mark(
+            var edits = list.Select(c => new AttendanceService.Mark(
                 c.Id, c.Status,
                 existing.GetValueOrDefault(c.Id)?.ArrivalTime is { Length: > 0 } t ? t : null,
                 c.Note is { } n ? (n.Length > 120 ? n[..120] : n) : existing.GetValueOrDefault(c.Id)?.Note)).ToList();
-            var output = await attendance.SaveAsync(dateText, marks, b.Str("reason"), userId, userName, role, ct);
+            var output = await attendance.SaveAsync(dateText, edits, b.Str("reason"), userId, userName, role, ct);
             saved += output.Saved;
             corrected += output.Corrected;
         }

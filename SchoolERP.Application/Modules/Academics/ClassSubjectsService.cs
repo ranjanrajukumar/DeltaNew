@@ -1,9 +1,9 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
-using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
 using SchoolERP.Application.Modules.Boards;
 using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
@@ -11,16 +11,14 @@ using SchoolERP.Domain.Entities;
 namespace SchoolERP.Application.Modules.Academics;
 
 /// <summary>Which subjects each class studies (the Node app's academics/classSubjects.routes.js).</summary>
-public sealed partial class ClassSubjectsService(IApplicationDbContext db, IBoardService boards, ISubjectMapService subjectMap)
+public sealed partial class ClassSubjectsService(
+    IClassSubjectRepository classSubjects, IClassSubjectQueryRepository classSubjectQueries, ISubjectRepository subjects,
+    IUnitOfWork unitOfWork, IBoardService boards, ISubjectMapService subjectMap) : IClassSubjectService
 {
     /// <summary>Class–subject assignments with readable class, subject and teacher names, and how each subject is taught.</summary>
     public async Task<List<object>> ListAsync(CancellationToken ct = default)
     {
-        var rows = await db.Set<ClassSubject>().AsNoTracking()
-            .Include(r => r.SchoolClass).Include(r => r.Subject).Include(r => r.Staff)
-            .Where(r => r.SchoolClass != null && r.Subject != null) // inner joins, as Sequelize's includes were
-            .OrderBy(r => r.ClassId).ThenBy(r => r.SubjectId)
-            .ToListAsync(ct);
+        var rows = await classSubjectQueries.ListAsync(ct); // inner joins on class and subject, as Sequelize's includes were
         return rows.Select(r => (object)new
         {
             id = r.Id,
@@ -33,9 +31,9 @@ public sealed partial class ClassSubjectsService(IApplicationDbContext db, IBoar
             electiveGroup = r.ElectiveGroup,
             periodsPerWeek = r.PeriodsPerWeek,
             practicalShare = r.PracticalShare,
-            className = $"{r.SchoolClass!.Name}-{r.SchoolClass.Section}",
-            subjectName = r.Subject!.Name,
-            teacherName = r.Staff is null ? null : $"{r.Staff.FirstName} {r.Staff.LastName}",
+            className = r.ClassName,
+            subjectName = r.SubjectName,
+            teacherName = r.TeacherName,
         }).ToList();
     }
 
@@ -43,27 +41,27 @@ public sealed partial class ClassSubjectsService(IApplicationDbContext db, IBoar
     {
         var row = new ClassSubject();
         SubjectMapService.ApplyClassSubject(body, row);
-        if (await db.Set<ClassSubject>().AnyAsync(r => r.ClassId == row.ClassId && r.SubjectId == row.SubjectId, ct))
+        if (await classSubjects.ExistsAsync(row.ClassId, row.SubjectId, ct))
             throw HttpException.Conflict("That subject is already in this class");
-        db.Set<ClassSubject>().Add(row);
-        await db.SaveChangesAsync(ct);
+        classSubjects.Add(row);
+        await unitOfWork.SaveChangesAsync(ct);
         return row.Id;
     }
 
     public async Task UpdateAsync(int id, Body body, CancellationToken ct = default)
     {
-        var row = await db.Set<ClassSubject>().FirstOrDefaultAsync(r => r.Id == id, ct) ?? throw HttpException.NotFound("Not found");
+        var row = await classSubjects.FindAsync(id, ct) ?? throw HttpException.NotFound("Not found");
         SubjectMapService.ApplyClassSubject(body, row, partial: true);
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
         await subjectMap.AfterClassSubjectChangeAsync(row.Id, ct);
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)
     {
-        var row = await db.Set<ClassSubject>().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var row = await classSubjects.FindAsync(id, ct);
         if (row is null) return;
-        db.Set<ClassSubject>().Remove(row);
-        await db.SaveChangesAsync(ct);
+        classSubjects.Remove(row);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -75,12 +73,10 @@ public sealed partial class ClassSubjectsService(IApplicationDbContext db, IBoar
         var wanted = classIds is JsonArray list
             ? list.Select(n => Body.AsNumber(n) is { } d && d == Math.Floor(d) ? (int)d : 0).ToList()
             : [];
-        var classes = await db.Set<SchoolClass>().AsNoTracking()
-            .Where(c => wanted.Count == 0 || wanted.Contains(c.Id))
-            .ToListAsync(ct);
+        var classes = await classSubjects.ClassesAsync(wanted, ct);
         if (classes.Count == 0) throw HttpException.BadRequest("No classes to apply a template to");
 
-        var byName = (await db.Set<Subject>().ToListAsync(ct))
+        var byName = (await subjects.ListTrackedAsync(ct))
             .GroupBy(s => s.Name.ToLowerInvariant()).ToDictionary(g => g.Key, g => g.Last());
         var codes = byName.Values.Select(s => s.Code).ToHashSet();
         var templates = new Dictionary<string, JsonArray?>(); // board|stage -> subjects
@@ -93,18 +89,18 @@ public sealed partial class ClassSubjectsService(IApplicationDbContext db, IBoar
             var stage = SubjectTemplates.StageOf(cls.Name);
             var board = await boards.OfClassAsync(cls, ct);
             var key = $"{board?.Id}|{stage}";
-            if (!templates.TryGetValue(key, out var subjects))
+            if (!templates.TryGetValue(key, out var templateSubjects))
             {
                 var rule = stage is null ? null : await boards.ResolveRuleAsync(board, "subject_template", stage, ct: ct);
-                subjects = rule?.Payload?["subjects"] as JsonArray;
-                templates[key] = subjects;
+                templateSubjects = rule?.Payload?["subjects"] as JsonArray;
+                templates[key] = templateSubjects;
             }
-            if (subjects is null)
+            if (templateSubjects is null)
             {
                 noTemplate.Add($"{cls.Name}-{cls.Section}");
                 continue;
             }
-            foreach (var item in subjects)
+            foreach (var item in templateSubjects)
             {
                 var name = Body.AsString(item?["name"]) ?? "";
                 var periodsPerWeek = Body.AsNumber(item?["periodsPerWeek"]) is { } p ? (int?)p : null;
@@ -121,24 +117,24 @@ public sealed partial class ClassSubjectsService(IApplicationDbContext db, IBoar
                     }
                     codes.Add(code);
                     subject = new Subject { Name = name, Code = code };
-                    db.Set<Subject>().Add(subject);
-                    await db.SaveChangesAsync(ct);
+                    subjects.Add(subject);
+                    await unitOfWork.SaveChangesAsync(ct);
                     byName[name.ToLowerInvariant()] = subject;
                 }
-                var link = await db.Set<ClassSubject>().FirstOrDefaultAsync(l => l.ClassId == cls.Id && l.SubjectId == subject.Id, ct);
+                var link = await classSubjects.FindAsync(cls.Id, subject.Id, ct);
                 if (link is null)
                 {
-                    db.Set<ClassSubject>().Add(new ClassSubject
+                    classSubjects.Add(new ClassSubject
                     {
                         ClassId = cls.Id, SubjectId = subject.Id, Component = component, PeriodsPerWeek = periodsPerWeek,
                     });
-                    await db.SaveChangesAsync(ct);
+                    await unitOfWork.SaveChangesAsync(ct);
                     added++;
                 }
                 else if (link.PeriodsPerWeek is null)
                 {
                     link.PeriodsPerWeek = periodsPerWeek;
-                    await db.SaveChangesAsync(ct);
+                    await unitOfWork.SaveChangesAsync(ct);
                     filled++;
                 }
             }

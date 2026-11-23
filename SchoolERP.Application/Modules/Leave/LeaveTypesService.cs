@@ -1,15 +1,17 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using SchoolERP.Application.Common.Exceptions;
 using SchoolERP.Application.Common.Helpers;
-using SchoolERP.Application.Common.Interfaces;
+using SchoolERP.Application.Interfaces;
+using SchoolERP.Application.Interfaces.Repositories;
+using SchoolERP.Application.Interfaces.Services;
 using SchoolERP.Domain.Entities;
 
 namespace SchoolERP.Application.Modules.Leave;
 
 /// <summary>Leave types, leave spans, yearly limits and balances (the Node app's leave/leaveTypes.service.js).</summary>
-public sealed partial class LeaveTypesService(IApplicationDbContext db)
+public sealed partial class LeaveTypesService(ILeaveTypeRepository leaveTypes, ILeaveBalanceQueryRepository balances, IUnitOfWork unitOfWork)
+    : ILeaveTypesService
 {
     private static readonly string[] Applies = ["staff", "student", "both"];
     private static readonly string[] Approvers = ["admin", "class_teacher", "department_head"];
@@ -46,15 +48,12 @@ public sealed partial class LeaveTypesService(IApplicationDbContext db)
 
     /// <summary>Leave types; <paramref name="kind"/> keeps those that apply to it; inactive ones are hidden unless <paramref name="all"/>.</summary>
     public Task<List<LeaveType>> ListAsync(string? kind, bool all, CancellationToken ct = default) =>
-        db.Set<LeaveType>().AsNoTracking()
-            .Where(t => (all || t.Active) && (string.IsNullOrEmpty(kind) || t.AppliesTo == kind || t.AppliesTo == "both"))
-            .OrderBy(t => t.Id)
-            .ToListAsync(ct);
+        leaveTypes.ListAsync(kind, all, ct);
 
     /// <summary>The type an application names, checked to be active and to apply to this kind of person.</summary>
     public async Task<LeaveType> TypeForAsync(int? id, string kind, CancellationToken ct = default)
     {
-        var type = id is { } i and not 0 ? await db.Set<LeaveType>().AsNoTracking().FirstOrDefaultAsync(t => t.Id == i, ct) : null;
+        var type = id is { } i and not 0 ? await leaveTypes.GetAsync(i, ct) : null;
         if (type is null) throw HttpException.BadRequest("Choose a leave type");
         if (!type.Active) throw HttpException.BadRequest($"{type.Name} is not available any more");
         if (type.AppliesTo != "both" && type.AppliesTo != kind) throw HttpException.BadRequest($"{type.Name} is not a {kind} leave type");
@@ -62,34 +61,33 @@ public sealed partial class LeaveTypesService(IApplicationDbContext db)
     }
 
     private Task<bool> NameTakenAsync(string name, int? exceptId, CancellationToken ct) =>
-        db.Set<LeaveType>().AnyAsync(t => t.Name == name && t.Id != (exceptId ?? 0), ct);
+        leaveTypes.NameTakenAsync(name, exceptId, ct);
 
     public async Task<int> CreateAsync(Body body, CancellationToken ct = default)
     {
         var t = new LeaveType();
         Apply(body, t);
         if (await NameTakenAsync(t.Name, null, ct)) throw HttpException.Conflict("A leave type with that name already exists");
-        db.Set<LeaveType>().Add(t);
-        await db.SaveChangesAsync(ct);
+        leaveTypes.Add(t);
+        await unitOfWork.SaveChangesAsync(ct);
         return t.Id;
     }
 
     public async Task UpdateAsync(int id, Body body, CancellationToken ct = default)
     {
-        var t = await db.Set<LeaveType>().FirstOrDefaultAsync(x => x.Id == id, ct) ?? throw HttpException.NotFound("Leave type not found");
+        var t = await leaveTypes.FindAsync(id, ct) ?? throw HttpException.NotFound("Leave type not found");
         Apply(body, t);
         if (await NameTakenAsync(t.Name, id, ct)) throw HttpException.Conflict("A leave type with that name already exists");
-        await db.SaveChangesAsync(ct);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     /// <summary>A type already used by any request can only be switched off, so past records keep their meaning.</summary>
     public async Task DeleteAsync(int id, CancellationToken ct = default)
     {
-        var used = await db.Set<LeaveRequest>().CountAsync(l => l.LeaveTypeId == id, ct) + await db.Set<StudentLeave>().CountAsync(l => l.LeaveTypeId == id, ct);
+        var used = await leaveTypes.UsageCountAsync(id, ct);
         if (used > 0) throw HttpException.Conflict("This type has been used; switch it off instead of deleting it");
-        var rows = await db.Set<LeaveType>().Where(t => t.Id == id).ToListAsync(ct);
-        db.Set<LeaveType>().RemoveRange(rows);
-        await db.SaveChangesAsync(ct);
+        if (await leaveTypes.FindAsync(id, ct) is { } row) leaveTypes.Remove(row);
+        await unitOfWork.SaveChangesAsync(ct);
     }
 
     /// <summary>What a request covers. Days = 0 for timely leave, 0.5 for a half day.</summary>
@@ -131,14 +129,8 @@ public sealed partial class LeaveTypesService(IApplicationDbContext db)
         var start = new DateOnly(year, 1, 1);
         var end = new DateOnly(year, 12, 31);
         if (kind == "staff")
-            return await db.Set<LeaveRequest>()
-                .Where(l => l.StaffId == personId && l.LeaveTypeId == typeId && (l.Status == "approved" || (includePending && l.Status == "pending"))
-                    && l.FromDate >= start && l.ToDate <= end && (exceptId == null || l.Id != exceptId))
-                .SumAsync(l => l.Days, ct);
-        return await db.Set<StudentLeave>()
-            .Where(l => l.StudentId == personId && l.LeaveTypeId == typeId && (l.Status == "approved" || (includePending && l.Status == "pending"))
-                && l.FromDate >= start && l.ToDate <= end && (exceptId == null || l.Id != exceptId))
-            .SumAsync(l => l.Days, ct);
+            return await leaveTypes.StaffDaysUsedAsync(personId, typeId, start, end, includePending, exceptId, ct);
+        return await leaveTypes.StudentDaysUsedAsync(personId, typeId, start, end, includePending, exceptId, ct);
     }
 
     /// <summary>Throws when <paramref name="days"/> more of this type would pass the yearly limit.</summary>
@@ -161,21 +153,10 @@ public sealed partial class LeaveTypesService(IApplicationDbContext db)
         var types = await ListAsync(kind, false, ct);
         var start = new DateOnly(y, 1, 1);
         var end = new DateOnly(y, 12, 31);
-        var leaves = kind == "staff"
-            ? await db.Set<LeaveRequest>().AsNoTracking()
-                .Where(l => l.Status == "approved" && l.FromDate >= start && l.ToDate <= end && l.LeaveTypeId != null)
-                .Select(l => new { Person = l.StaffId, Type = l.LeaveTypeId!.Value, l.Days }).ToListAsync(ct)
-            : await db.Set<StudentLeave>().AsNoTracking()
-                .Where(l => l.Status == "approved" && l.FromDate >= start && l.ToDate <= end && l.LeaveTypeId != null)
-                .Select(l => new { Person = l.StudentId, Type = l.LeaveTypeId!.Value, l.Days }).ToListAsync(ct);
-        var used = leaves.GroupBy(l => (l.Person, l.Type)).ToDictionary(g => g.Key, g => g.Sum(l => l.Days));
+        var used = (await balances.UsedAsync(kind, start, end, ct)).ToDictionary(l => (l.PersonId, l.TypeId), l => l.Days);
 
-        var people = kind == "staff"
-            ? (await db.Set<Staff>().AsNoTracking().Where(s => s.Status == "active").OrderBy(s => s.FirstName).ToListAsync(ct))
-                .Select(s => (s.Id, No: (string?)s.StaffNo, Name: $"{s.FirstName} {s.LastName}", Group: s.Designation)).ToList()
-            : (await db.Set<Student>().AsNoTracking().Include(s => s.SchoolClass).Where(s => s.Status == "active").OrderBy(s => s.FirstName).ToListAsync(ct))
-                .Select(s => (s.Id, No: (string?)s.AdmissionNo, Name: $"{s.FirstName} {s.LastName}",
-                    Group: s.SchoolClass is { } c ? $"{c.Name}-{c.Section}" : null)).ToList();
+        var people = (kind == "staff" ? await balances.ActiveStaffAsync(ct) : await balances.ActiveStudentsAsync(ct))
+            .Select(s => (s.Id, s.No, Name: $"{s.FirstName} {s.LastName}", s.Group)).ToList();
         return new
         {
             year = y,
